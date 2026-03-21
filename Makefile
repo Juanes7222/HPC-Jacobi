@@ -1,29 +1,32 @@
 CC        = gcc
-NOOPT     = -Wall -Wextra
+NOOPT     = -O2 -Wall -Wextra
 BEST      = -O3 -Wall -march=native -funroll-loops -flto -ffast-math -fomit-frame-pointer
 LDFLAGS   = -lm -lpthread
 IFLAGS    = -Iinclude
-
+BIN       = bin
 LIB       = src/poisson.c
 
 .PHONY: all clean
 
-all: serial_std serial_opt serial_cache threads processes
+all: $(BIN)/serial_std $(BIN)/serial_opt $(BIN)/serial_cache $(BIN)/threads $(BIN)/processes
 
-serial_std: src/serial.c $(LIB)
+$(BIN):
+	mkdir -p $(BIN)
+
+$(BIN)/serial_std: src/serial_std.c $(LIB) | $(BIN)
 	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-serial_opt: src/serial.c $(LIB)
+$(BIN)/serial_opt: src/serial_std.c $(LIB) | $(BIN)
 	$(CC) $(BEST) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-serial_cache: src/serial_cache.c $(LIB)
+$(BIN)/serial_cache: src/serial_cache.c $(LIB) | $(BIN)
 	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-threads: src/threads.c $(LIB)
+$(BIN)/threads: src/threads.c $(LIB) | $(BIN)
 	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-processes: src/processes.c $(LIB)
+$(BIN)/processes: src/processes.c $(LIB) | $(BIN)
 	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -f serial_std serial_opt serial_cache threads processes
+	rm -rf $(BIN)

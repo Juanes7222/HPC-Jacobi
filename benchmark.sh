@@ -85,23 +85,49 @@ optimize_system() {
     _DM_UNIT="$(_detect_display_manager)"
     if [[ -n "${_DM_UNIT}" ]]; then
         log_info "Stopping display manager: ${_DM_UNIT}"
-        systemctl stop "${_DM_UNIT}" || true
+        if systemctl stop "${_DM_UNIT}" 2>/dev/null; then
+            log_ok "Display manager stopped"
+        else
+            log_error "Failed to stop ${_DM_UNIT}"
+        fi
     else
         log_info "No active display manager detected"
     fi
 
     log_info "Isolating multi-user.target (dropping GUI)"
-    systemctl isolate multi-user.target || true
+    if systemctl isolate multi-user.target 2>/dev/null; then
+        log_ok "Switched to multi-user.target"
+    else
+        log_error "Failed to isolate multi-user.target"
+    fi
 
     log_info "Setting CPU governor: performance"
-    echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+    local gov_ok=0
+    for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [[ -f "${f}" ]] && echo performance > "${f}" && gov_ok=1
+    done
+    if (( gov_ok )); then
+        log_ok "CPU governor set to performance"
+    else
+        log_error "Could not set CPU governor (path not found)"
+    fi
 
     if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
         log_info "Disabling AMD CPU boost"
-        echo 0 > /sys/devices/system/cpu/cpufreq/boost
+        if echo 0 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null; then
+            log_ok "AMD boost disabled"
+        else
+            log_error "Failed to disable AMD boost"
+        fi
     elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
         log_info "Disabling Intel turbo boost"
-        echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
+        if echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null; then
+            log_ok "Intel turbo disabled"
+        else
+            log_error "Failed to disable Intel turbo"
+        fi
+    else
+        log_info "No boost control path found — skipping"
     fi
 
     log_ok "System ready for benchmarking"
@@ -114,25 +140,36 @@ restore_system() {
 
     log_section "Restoring system"
 
-    if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
-        log_info "Restoring CPU governor: powersave"
-        echo powersave | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+    local gov_ok=0
+    for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+        [[ -f "${f}" ]] && echo powersave > "${f}" && gov_ok=1
+    done
+    if (( gov_ok )); then
+        log_ok "CPU governor restored to powersave"
     fi
 
     if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
         log_info "Re-enabling AMD CPU boost"
-        echo 1 > /sys/devices/system/cpu/cpufreq/boost
+        echo 1 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null             && log_ok "AMD boost re-enabled"             || log_error "Failed to re-enable AMD boost"
     elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
         log_info "Re-enabling Intel turbo boost"
-        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null             && log_ok "Intel turbo re-enabled"             || log_error "Failed to re-enable Intel turbo"
     fi
 
     log_info "Restoring graphical.target"
-    systemctl isolate graphical.target || true
+    if systemctl isolate graphical.target 2>/dev/null; then
+        log_ok "Switched back to graphical.target"
+    else
+        log_error "Failed to restore graphical.target"
+    fi
 
     if [[ -n "${_DM_UNIT}" ]]; then
         log_info "Starting display manager: ${_DM_UNIT}"
-        systemctl start "${_DM_UNIT}" || true
+        if systemctl start "${_DM_UNIT}" 2>/dev/null; then
+            log_ok "Display manager started"
+        else
+            log_error "Failed to start ${_DM_UNIT}"
+        fi
     fi
 
     log_ok "System restored"
@@ -144,7 +181,7 @@ restore_system() {
 check_and_compile() {
     local missing=0
     for bin in serial_std serial_opt serial_cache threads processes; do
-        if [[ ! -x "${SCRIPT_DIR}/${bin}" ]]; then
+        if [[ ! -x "${SCRIPT_DIR}/bin/${bin}" ]]; then
             log_info "Binary not found: ${bin}"
             missing=1
         fi
@@ -369,10 +406,17 @@ print_summary() {
 # ---------------------------------------------------------------------------
 # Suites
 # ---------------------------------------------------------------------------
+run_suite_serial() {
+    local entries=(
+        "serial_std|./bin/serial_std|0"
+    )
+    measure_entries "serial" "${entries[@]}"
+    print_summary   "serial" "serial_std" "0"
+}
+
 run_suite_compiler() {
     local entries=(
-        "serial_std|./serial_std|0"
-        "serial_opt|./serial_opt|0"
+        "serial_opt|./bin/serial_opt|0"
     )
     measure_entries "compiler" "${entries[@]}"
     print_summary   "compiler" "serial_std" "0"
@@ -380,20 +424,19 @@ run_suite_compiler() {
 
 run_suite_cache() {
     local entries=(
-        "serial_std|./serial_std|0"
-        "serial_cache|./serial_cache|0"
+        "serial_cache|./bin/serial_cache|0"
     )
     measure_entries "cache" "${entries[@]}"
     print_summary   "cache" "serial_std" "0"
 }
 
 run_suite_parallel() {
-    local entries=("serial_std|./serial_std|0")
+    local entries=("")
     for p in "${PARALLEL_COUNTS[@]}"; do
-        entries+=("threads|./threads|${p}")
+        entries+=("threads|./bin/threads|${p}")
     done
     for p in "${PARALLEL_COUNTS[@]}"; do
-        entries+=("processes|./processes|${p}")
+        entries+=("processes|./bin/processes|${p}")
     done
     measure_entries "parallel" "${entries[@]}"
     print_summary   "parallel" "serial_std" "0"
@@ -427,17 +470,19 @@ main() {
     print_banner
 
     case "${suite}" in
+        serial)   run_suite_serial   ;;
         compiler) run_suite_compiler ;;
         cache)    run_suite_cache    ;;
         parallel) run_suite_parallel ;;
         all)
+            run_suite_serial
             run_suite_compiler
             run_suite_cache
             run_suite_parallel
             ;;
         *)
             log_error "Unknown suite: '${suite}'"
-            log_error "Options: compiler | cache | parallel | all"
+            log_error "Options: serial | compiler | cache | parallel | all"
             exit 1
             ;;
     esac
