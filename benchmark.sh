@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
 # =============================================================================
-# benchmark.sh  --  Poisson 1D Jacobi: parallel benchmark
+# benchmark.sh  --  Poisson 1D Jacobi: three experimental suites
 #
-# Suite 1 - parallel   : serial  vs  threads(2,4,6,8,12)  vs  processes(2,4,6,8,12)
+# Suite 1 - compiler : serial_std  vs  serial_opt
+#           Does compiler optimization alone beat parallelism?
+#
+# Suite 2 - cache    : serial_std  vs  serial_cache
+#           Isolates the effect of cache-line alignment + prefetch.
+#
+# Suite 3 - parallel : serial_std  vs  threads(2,4,6,8,12)
+#                                  vs  processes(2,4,6,8,12)
 #           Compares shared-memory threading against fork+mmap processes.
 #
 # Usage:
-#   ./benchmark.sh [parallel|all]   (default: all)
+#   sudo ./benchmark.sh [compiler|cache|parallel|all]   (default: all)
 #
 # Output (per suite):
 #   results/data_<suite>.csv
 #   results/summary_<suite>.txt
 #
-# Binaries expected in the same directory:
-#   ./serial    <n> <max_iters>
-#   ./threads   <n> <max_iters> <n_threads>
-#   ./processes <n> <max_iters> <n_procs>
+# Binaries (built by make):
+#   ./serial_std    <n> <max_iters>
+#   ./serial_opt    <n> <max_iters>
+#   ./serial_cache  <n> <max_iters>
+#   ./threads       <n> <max_iters> <n_threads>
+#   ./processes     <n> <max_iters> <n_procs>
 #
 # Each binary prints a single float (wall time in ms) to stdout.
 # Human-readable info goes to stderr.
@@ -24,8 +33,6 @@
 set -euo pipefail
 export LC_NUMERIC=C
 
-# Resolve the directory where this script lives so the script can be
-# invoked from any working directory (e.g. sudo bash /path/to/benchmark.sh).
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 RESULTS_DIR="results"
@@ -49,6 +56,112 @@ log_info()    { echo -e "  ${CYAN}>${RESET} $*"; }
 log_ok()      { echo -e "  ${GREEN}[ok]${RESET} $*"; }
 log_error()   { echo -e "  ${RED}[error]${RESET} $*" >&2; }
 log_section() { echo -e "\n${BOLD}-- $* ${RESET}"; }
+
+# ---------------------------------------------------------------------------
+# System optimization / restore
+# ---------------------------------------------------------------------------
+_DM_UNIT=""
+
+_detect_display_manager() {
+    local candidates=(sddm gdm gdm3 lightdm ly greetd)
+    for dm in "${candidates[@]}"; do
+        if systemctl is-active --quiet "${dm}.service" 2>/dev/null; then
+            echo "${dm}.service"
+            return
+        fi
+    done
+    echo ""
+}
+
+optimize_system() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        log_error "Run as root to apply system optimizations (sudo ./benchmark.sh)"
+        log_error "Continuing without optimizations."
+        return
+    fi
+
+    log_section "Applying system optimizations"
+
+    _DM_UNIT="$(_detect_display_manager)"
+    if [[ -n "${_DM_UNIT}" ]]; then
+        log_info "Stopping display manager: ${_DM_UNIT}"
+        systemctl stop "${_DM_UNIT}" || true
+    else
+        log_info "No active display manager detected"
+    fi
+
+    log_info "Isolating multi-user.target (dropping GUI)"
+    systemctl isolate multi-user.target || true
+
+    log_info "Setting CPU governor: performance"
+    echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+
+    if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
+        log_info "Disabling AMD CPU boost"
+        echo 0 > /sys/devices/system/cpu/cpufreq/boost
+    elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        log_info "Disabling Intel turbo boost"
+        echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
+    fi
+
+    log_ok "System ready for benchmarking"
+}
+
+restore_system() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        return
+    fi
+
+    log_section "Restoring system"
+
+    if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
+        log_info "Restoring CPU governor: powersave"
+        echo powersave | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1 || true
+    fi
+
+    if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
+        log_info "Re-enabling AMD CPU boost"
+        echo 1 > /sys/devices/system/cpu/cpufreq/boost
+    elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
+        log_info "Re-enabling Intel turbo boost"
+        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
+    fi
+
+    log_info "Restoring graphical.target"
+    systemctl isolate graphical.target || true
+
+    if [[ -n "${_DM_UNIT}" ]]; then
+        log_info "Starting display manager: ${_DM_UNIT}"
+        systemctl start "${_DM_UNIT}" || true
+    fi
+
+    log_ok "System restored"
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight: compile if any binary is missing
+# ---------------------------------------------------------------------------
+check_and_compile() {
+    local missing=0
+    for bin in serial_std serial_opt serial_cache threads processes; do
+        if [[ ! -x "${SCRIPT_DIR}/${bin}" ]]; then
+            log_info "Binary not found: ${bin}"
+            missing=1
+        fi
+    done
+
+    if [[ "${missing}" -eq 1 ]]; then
+        log_section "Compiling binaries"
+        if [[ ! -f "${SCRIPT_DIR}/Makefile" ]]; then
+            log_error "Makefile not found in ${SCRIPT_DIR}. Run 'make' manually."
+            exit 1
+        fi
+        make -C "${SCRIPT_DIR}" 2>&1 | sed 's/^/  /'
+        log_ok "Compilation complete"
+    else
+        log_info "All binaries present"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # CSV helpers
@@ -80,12 +193,11 @@ write_row() {
 }
 
 # ---------------------------------------------------------------------------
-# Single run: captures stdout (ms); human output goes to stderr
+# Single run
 # ---------------------------------------------------------------------------
 run_once() {
     local bin="$1" size="$2" par="$3"
-    local ms err exit_code=0
-    local errfile
+    local ms errfile exit_code=0
     errfile=$(mktemp)
 
     if [[ "${par}" -eq 0 ]]; then
@@ -94,10 +206,7 @@ run_once() {
         ms=$("${bin}" "${size}" "${MAX_ITERS}" "${par}" 2>"${errfile}") || exit_code=$?
     fi
 
-    if [[ -s "${errfile}" ]]; then
-        # Human-readable binary output -> forward to terminal stderr
-        cat "${errfile}" >&2
-    fi
+    [[ -s "${errfile}" ]] && cat "${errfile}" >&2
     rm -f "${errfile}"
 
     if [[ -z "${ms}" || "${exit_code}" -ne 0 ]]; then
@@ -110,9 +219,8 @@ run_once() {
 
 # ---------------------------------------------------------------------------
 # Generic measurement loop
+# entries format: "impl|binary_path|parallelism"  (parallelism=0 -> serial)
 # ---------------------------------------------------------------------------
-# entries format: "impl|binary_path|parallelism"
-#   parallelism == 0 means serial (no 3rd argument to the binary)
 measure_entries() {
     local suite="$1"
     local csv="${RESULTS_DIR}/data_${suite}.csv"
@@ -152,10 +260,10 @@ measure_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# Summary: averages + speedup over serial reference
+# Summary table with speedup relative to a reference row
 # ---------------------------------------------------------------------------
 print_summary() {
-    local suite="$1"
+    local suite="$1" ref_impl="$2" ref_par="$3"
     local csv="${RESULTS_DIR}/data_${suite}.csv"
     local summary="${RESULTS_DIR}/summary_${suite}.txt"
     local tmpavg="${RESULTS_DIR}/.avgs_${suite}.tmp"
@@ -164,8 +272,7 @@ print_summary() {
     NR==1 { next }
     {
         key = $2 SUBSEP $3 SUBSEP $4
-        sum[key] += $6
-        cnt[key]++
+        sum[key] += $6; cnt[key]++
     }
     END {
         for (k in sum) {
@@ -174,10 +281,10 @@ print_summary() {
         }
     }' "${csv}" | sort -t'|' -k1,1 -k2,2n -k3,3n > "${tmpavg}"
 
-    # Reference: serial (par=0) per grid size
     declare -A REF_AVG
     while IFS='|' read -r impl par size avg; do
-        [[ "${impl}" == "serial" && "${par}" -eq 0 ]] && REF_AVG["${size}"]="${avg}"
+        [[ "${impl}" == "${ref_impl}" && "${par}" == "${ref_par}" ]] \
+            && REF_AVG["${size}"]="${avg}"
     done < "${tmpavg}"
 
     {
@@ -189,19 +296,15 @@ print_summary() {
         echo "Grid sizes  : ${GRID_SIZES[*]}"
         echo "Max iters   : ${MAX_ITERS}"
         echo "Repetitions : ${REPETITIONS}"
-        echo "Reference   : serial"
+        echo "Reference   : ${ref_impl} (par=${ref_par})"
         echo ""
         echo "Average wall time (ms)"
         printf '%0.s=' {1..90}; echo ""
         printf "%-22s" "Impl (parallelism)"
-        for size in "${GRID_SIZES[@]}"; do
-            printf "  %10s" "n=${size}"
-        done
+        for size in "${GRID_SIZES[@]}"; do printf "  %10s" "n=${size}"; done
         printf "  %10s\n" "Avg Speedup"
         printf "%-22s" "----------------------"
-        for size in "${GRID_SIZES[@]}"; do
-            printf "  %10s" "----------"
-        done
+        for size in "${GRID_SIZES[@]}"; do printf "  %10s" "----------"; done
         printf "  %10s\n" "----------"
 
         declare -A ROW_AVG ROW_ORDER
@@ -212,7 +315,13 @@ print_summary() {
         done < "${tmpavg}"
 
         IFS=$'\n' sorted_keys=($(printf '%s\n' "${!ROW_ORDER[@]}" \
-            | awk -F'|' '{ order=($1=="serial"?0:$1=="threads"?1:2); print order"|"$2"|"$0 }' \
+            | awk -F'|' '{
+                if      ($1=="serial_std")   o=0
+                else if ($1=="serial_opt")   o=1
+                else if ($1=="serial_cache") o=2
+                else if ($1=="threads")      o=3
+                else                         o=4
+                print o"|"$2"|"$0 }' \
             | sort -t'|' -k1,1n -k2,2n \
             | cut -d'|' -f3-))
         unset IFS
@@ -226,10 +335,7 @@ print_summary() {
             local sp_sum=0 sp_cnt=0
             for size in "${GRID_SIZES[@]}"; do
                 local avg="${ROW_AVG[${key}:${size}]:-}"
-                if [[ -z "${avg}" ]]; then
-                    printf "  %10s" "N/A"
-                    continue
-                fi
+                if [[ -z "${avg}" ]]; then printf "  %10s" "N/A"; continue; fi
                 printf "  %10.1f" "${avg}"
 
                 local ref="${REF_AVG[${size}]:-}"
@@ -251,7 +357,7 @@ print_summary() {
         done
 
         echo ""
-        echo "Speedup = T(serial) / T(row)  [>1 means faster than serial]"
+        echo "Speedup = T(${ref_impl}) / T(row)  [>1 means faster than reference]"
         printf '%0.s=' {1..90}; echo ""
     } | tee "${summary}"
 
@@ -261,111 +367,43 @@ print_summary() {
 }
 
 # ---------------------------------------------------------------------------
-# Suite: serial vs threads(2,4,6,8,12) vs processes(2,4,6,8,12)
+# Suites
 # ---------------------------------------------------------------------------
+run_suite_compiler() {
+    local entries=(
+        "serial_std|./serial_std|0"
+        "serial_opt|./serial_opt|0"
+    )
+    measure_entries "compiler" "${entries[@]}"
+    print_summary   "compiler" "serial_std" "0"
+}
+
+run_suite_cache() {
+    local entries=(
+        "serial_std|./serial_std|0"
+        "serial_cache|./serial_cache|0"
+    )
+    measure_entries "cache" "${entries[@]}"
+    print_summary   "cache" "serial_std" "0"
+}
+
 run_suite_parallel() {
-    local entries=()
-    entries+=("serial|./serial|0")
+    local entries=("serial_std|./serial_std|0")
     for p in "${PARALLEL_COUNTS[@]}"; do
         entries+=("threads|./threads|${p}")
     done
     for p in "${PARALLEL_COUNTS[@]}"; do
         entries+=("processes|./processes|${p}")
     done
-
     measure_entries "parallel" "${entries[@]}"
-    print_summary "parallel"
-}
-
-
-# ---------------------------------------------------------------------------
-# System optimization / restore
-# ---------------------------------------------------------------------------
-
-_DM_UNIT=""
-
-_detect_display_manager() {
-    local candidates=(sddm gdm gdm3 lightdm ly greetd)
-    for dm in "${candidates[@]}"; do
-        if systemctl is-active --quiet "${dm}.service" 2>/dev/null; then
-            echo "${dm}.service"
-            return
-        fi
-    done
-    echo ""
-}
-
-optimize_system() {
-    if [[ "${EUID}" -ne 0 ]]; then
-        log_error "Run as root to apply system optimizations (sudo ./benchmark.sh)"
-        log_error "Continuing without optimizations."
-        return
-    fi
-
-    log_section "Applying system optimizations"
-
-    _DM_UNIT="$(_detect_display_manager)"
-    if [[ -n "${_DM_UNIT}" ]]; then
-        log_info "Stopping display manager: ${_DM_UNIT}"
-        systemctl stop "${_DM_UNIT}"
-    else
-        log_info "No active display manager detected"
-    fi
-
-    log_info "Isolating multi-user.target (dropping GUI)"
-    systemctl isolate multi-user.target
-
-    log_info "Setting CPU governor: performance"
-    echo performance | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-
-    # Disable boost: AMD path first, then Intel fallback
-    if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
-        log_info "Disabling AMD CPU boost"
-        echo 0 > /sys/devices/system/cpu/cpufreq/boost
-    elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-        log_info "Disabling Intel turbo boost"
-        echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo
-    fi
-
-    log_ok "System ready for benchmarking"
-}
-
-restore_system() {
-    if [[ "${EUID}" -ne 0 ]]; then
-        return
-    fi
-
-    log_section "Restoring system"
-
-    if [[ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]]; then
-        log_info "Restoring CPU governor: powersave"
-        echo powersave | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-    fi
-
-    if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
-        log_info "Re-enabling AMD CPU boost"
-        echo 1 > /sys/devices/system/cpu/cpufreq/boost
-    elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-        log_info "Re-enabling Intel turbo boost"
-        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo
-    fi
-
-    log_info "Restoring graphical.target"
-    systemctl isolate graphical.target
-
-    if [[ -n "${_DM_UNIT}" ]]; then
-        log_info "Starting display manager: ${_DM_UNIT}"
-        systemctl start "${_DM_UNIT}"
-    fi
-
-    log_ok "System restored"
+    print_summary   "parallel" "serial_std" "0"
 }
 
 # ---------------------------------------------------------------------------
 print_banner() {
     echo -e "${BOLD}"
     echo "================================================================"
-    echo "   Poisson 1D Jacobi -- Parallel Benchmark"
+    echo "   Poisson 1D Jacobi -- Benchmark"
     echo "   Grid sizes   : ${GRID_SIZES[*]}"
     echo "   Max iters    : ${MAX_ITERS}"
     echo "   Repetitions  : ${REPETITIONS}"
@@ -376,28 +414,6 @@ print_banner() {
 }
 
 # ---------------------------------------------------------------------------
-check_and_compile() {
-    local missing=0
-    for bin in serial threads processes; do
-        if [[ ! -x "${SCRIPT_DIR}/${bin}" ]]; then
-            log_info "Binary not found: ${bin}"
-            missing=1
-        fi
-    done
-
-    if [[ "${missing}" -eq 1 ]]; then
-        log_section "Compiling binaries"
-        if [[ ! -f "${SCRIPT_DIR}/Makefile" ]]; then
-            log_error "Makefile not found in ${SCRIPT_DIR}. Run 'make' manually first."
-            exit 1
-        fi
-        make -C "${SCRIPT_DIR}" 2>&1 | sed 's/^/  /'
-        log_ok "Compilation complete"
-    else
-        log_info "All binaries present"
-    fi
-}
-
 main() {
     local suite="${1:-all}"
     cd "${SCRIPT_DIR}"
@@ -411,16 +427,20 @@ main() {
     print_banner
 
     case "${suite}" in
-        parallel|all)
+        compiler) run_suite_compiler ;;
+        cache)    run_suite_cache    ;;
+        parallel) run_suite_parallel ;;
+        all)
+            run_suite_compiler
+            run_suite_cache
             run_suite_parallel
             ;;
         *)
             log_error "Unknown suite: '${suite}'"
-            log_error "Options: parallel | all"
+            log_error "Options: compiler | cache | parallel | all"
             exit 1
             ;;
     esac
 }
-
 
 main "$@"

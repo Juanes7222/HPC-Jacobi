@@ -1,25 +1,29 @@
-CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -Iinclude
-LDFLAGS = -lm -lpthread
+CC        = gcc
+NOOPT     = -Wall -Wextra
+BEST      = -O3 -Wall -march=native -funroll-loops -flto -ffast-math -fomit-frame-pointer
+LDFLAGS   = -lm -lpthread
+IFLAGS    = -Iinclude
 
-SRC_LIB = src/poisson.c
-TARGETS = serial threads processes
+LIB       = src/poisson.c
 
-.PHONY: all clean run
+.PHONY: all clean
 
-all: $(TARGETS)
+all: serial_std serial_opt serial_cache threads processes
 
-serial: src/serial.c $(SRC_LIB)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+serial_std: src/serial.c $(LIB)
+	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-threads: src/threads.c $(SRC_LIB)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+serial_opt: src/serial.c $(LIB)
+	$(CC) $(BEST) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-processes: src/processes.c $(SRC_LIB)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+serial_cache: src/serial_cache.c $(LIB)
+	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
-run: all
-	@bash benchmark.sh
+threads: src/threads.c $(LIB)
+	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
+
+processes: src/processes.c $(LIB)
+	$(CC) $(NOOPT) $(IFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:
-	rm -f $(TARGETS)
+	rm -f serial_std serial_opt serial_cache threads processes
