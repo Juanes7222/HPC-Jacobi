@@ -6,14 +6,14 @@
 #define DEFAULT_N        2000
 #define DEFAULT_ITERS    5000
 #define DEFAULT_THREADS  4
-#define TOLERANCE        1e-8
+#define TOLERANCE        1e-6
 
 static double           *g_u;
 static double           *g_u_new;
 static const double     *g_f;
 static double            g_h;
+static int               g_n;
 static int               g_n_threads;
-static double           *g_local_diff;
 static double            g_global_diff;
 static int               g_converged;
 static int               g_iters_done;
@@ -33,16 +33,12 @@ static void *worker(void *arg) {
         for (int i = t->start; i <= t->end; i++)
             g_u_new[i] = 0.5 * (g_u[i - 1] + g_u[i + 1] + g_h * g_h * g_f[i]);
 
-        g_local_diff[t->id] = local_max_diff(g_u_new, g_u, t->start, t->end);
-
+        /* Wait for all threads to finish writing g_u_new before thread 0
+         * computes the residual, which reads neighbor values across chunks. */
         pthread_barrier_wait(&g_barrier);
 
         if (t->id == 0) {
-            g_global_diff = 0.0;
-            for (int k = 0; k < g_n_threads; k++)
-                if (g_local_diff[k] > g_global_diff)
-                    g_global_diff = g_local_diff[k];
-
+            g_global_diff = rms_residual(g_u_new, g_f, g_n, g_h);
             g_converged  = (g_global_diff < TOLERANCE);
             g_iters_done = iter + 1;
 
@@ -73,10 +69,10 @@ int main(int argc, char *argv[]) {
     g_u_new      = u_new;
     g_f          = f;
     g_h          = h;
+    g_n          = n;
     g_n_threads  = n_threads;
     g_converged  = 0;
     g_iters_done = 0;
-    g_local_diff = calloc((size_t)n_threads, sizeof(double));
 
     pthread_barrier_init(&g_barrier, NULL, (unsigned)n_threads);
 
@@ -105,7 +101,7 @@ int main(int argc, char *argv[]) {
     printf("%.3f\n", elapsed_ms);
 
     pthread_barrier_destroy(&g_barrier);
-    free(args); free(tids); free(g_local_diff);
+    free(args); free(tids);
     free(u); free(u_new); free(f);
     return 0;
 }

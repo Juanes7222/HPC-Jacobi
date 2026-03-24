@@ -9,7 +9,7 @@
 #define DEFAULT_N      2000
 #define DEFAULT_ITERS  5000
 #define DEFAULT_PROCS  4
-#define TOLERANCE      1e-8
+#define TOLERANCE      1e-6
 
 /*
  * All shared state lives in a single mmap'd block so every forked child
@@ -19,40 +19,33 @@
  *
  * Memory layout (flat, one mmap call):
  *
- *   [ u[0..n+1] | u_new[0..n+1] | f[0..n+1] | local_diff[0..n_procs-1] ]
- *
- * Using a single allocation avoids multiple mmap calls and keeps related
- * data on contiguous pages.
+ *   [ u[0..n+1] | u_new[0..n+1] | f[0..n+1] ]
  */
 typedef struct {
     double *u;
     double *u_new;
     double *f;
-    double *local_diff;
 } SharedArrays;
 
-static SharedArrays alloc_shared_arrays(int n, int n_procs) {
-    int    n2       = n + 2;
-    size_t arr_sz   = (size_t)n2 * sizeof(double);
-    size_t diff_sz  = (size_t)n_procs * sizeof(double);
-    size_t total    = 3 * arr_sz + diff_sz;
+static SharedArrays alloc_shared_arrays(int n) {
+    int    n2     = n + 2;
+    size_t arr_sz = (size_t)n2 * sizeof(double);
+    size_t total  = 3 * arr_sz;
 
     char *base = mmap(NULL, total, PROT_READ | PROT_WRITE,
                       MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (base == MAP_FAILED) { perror("mmap"); exit(1); }
 
     SharedArrays s;
-    s.u          = (double *)(base);
-    s.u_new      = (double *)(base + arr_sz);
-    s.f          = (double *)(base + 2 * arr_sz);
-    s.local_diff = (double *)(base + 3 * arr_sz);
+    s.u     = (double *)(base);
+    s.u_new = (double *)(base + arr_sz);
+    s.f     = (double *)(base + 2 * arr_sz);
     return s;
 }
 
-static void free_shared_arrays(SharedArrays s, int n, int n_procs) {
+static void free_shared_arrays(SharedArrays s, int n) {
     int    n2    = n + 2;
-    size_t total = 3 * (size_t)n2 * sizeof(double)
-                 + (size_t)n_procs * sizeof(double);
+    size_t total = 3 * (size_t)n2 * sizeof(double);
     munmap(s.u, total);
 }
 
@@ -62,7 +55,7 @@ int main(int argc, char *argv[]) {
     int    n_procs   = (argc > 3) ? atoi(argv[3]) : DEFAULT_PROCS;
     double h         = 1.0 / (n + 1);
 
-    SharedArrays s = alloc_shared_arrays(n, n_procs);
+    SharedArrays s = alloc_shared_arrays(n);
 
     initialize_grid(s.u,     n);
     initialize_grid(s.u_new, n);
@@ -76,7 +69,7 @@ int main(int argc, char *argv[]) {
     for (; iter < max_iters; iter++) {
 
         /* Fork one child per process slot. Each child computes its rows of
-         * u_new from u, stores its local max-diff, and exits. */
+         * u_new from u and exits. */
         pid_t *pids = malloc((size_t)n_procs * sizeof(pid_t));
         for (int p = 0; p < n_procs; p++) {
             int start = p * chunk + 1;
@@ -88,8 +81,6 @@ int main(int argc, char *argv[]) {
             if (pids[p] == 0) {
                 for (int i = start; i <= end; i++)
                     s.u_new[i] = 0.5 * (s.u[i-1] + s.u[i+1] + h * h * s.f[i]);
-
-                s.local_diff[p] = local_max_diff(s.u_new, s.u, start, end);
                 exit(0);
             }
         }
@@ -100,10 +91,8 @@ int main(int argc, char *argv[]) {
 
         free(pids);
 
-        /* Parent reduces local diffs and checks convergence. */
-        double diff = 0.0;
-        for (int p = 0; p < n_procs; p++)
-            if (s.local_diff[p] > diff) diff = s.local_diff[p];
+        /* Parent computes RMS residual on the fully-written u_new. */
+        double diff = rms_residual(s.u_new, s.f, n, h);
 
         /* Swap buffers: u_new becomes the new u for the next iteration. */
         double *tmp = s.u;
@@ -119,6 +108,6 @@ int main(int argc, char *argv[]) {
             n, iter + 1, n_procs, max_error(s.u, n, h), elapsed_ms);
     printf("%.3f\n", elapsed_ms);
 
-    free_shared_arrays(s, n, n_procs);
+    free_shared_arrays(s, n);
     return 0;
 }

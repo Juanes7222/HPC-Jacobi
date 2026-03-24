@@ -20,35 +20,40 @@ void initialize_grid(double *u, int n) {
 }
 
 /**
- * Fills f[1..n] = sin(pi * i * h).
- * Corresponds to -u'' = f whose exact solution is u(x) = sin(pi*x)/pi^2.
+ * Fills f[1..n] = -x*(x+3)*exp(x) at x = i*h.
+ * Forcing term for -u'' = f whose exact solution is u(x) = x*(x-1)*exp(x).
  */
 void compute_rhs(double *f, int n, double h) {
-    for (int i = 1; i <= n; i++)
-        f[i] = sin(M_PI * i * h);
+    for (int i = 1; i <= n; i++) {
+        double x = i * h;
+        f[i] = -x * (x + 3.0) * exp(x);
+    }
 }
 
 /**
- * Returns max-norm error against u_exact(x) = sin(pi*x)/pi^2 over [1..n].
+ * Returns max-norm error against u_exact(x) = x*(x-1)*exp(x) over [1..n].
  */
 double max_error(const double *u, int n, double h) {
     double err = 0.0;
     for (int i = 1; i <= n; i++) {
-        double d = fabs(u[i] - sin(M_PI * i * h) / (M_PI * M_PI));
+        double x = i * h;
+        double d = fabs(u[i] - x * (x - 1.0) * exp(x));
         if (d > err) err = d;
     }
     return err;
 }
 
 /**
- * Returns max |a[i] - b[i]| for i in [from, to].
- * Used by each worker to compute its local contribution to the global diff.
+ * Returns RMS norm of the residual r = A*u - f over [1..n].
+ * r[i] = (-u[i-1] + 2*u[i] - u[i+1]) / h^2 - f[i].
+ * Convergence criterion recommended by Burkardt (2011), section 9.
  */
-double local_max_diff(const double *a, const double *b, int from, int to) {
-    double diff = 0.0;
-    for (int i = from; i <= to; i++) {
-        double d = fabs(a[i] - b[i]);
-        if (d > diff) diff = d;
+double rms_residual(const double *u, const double *f, int n, double h) {
+    double h2  = h * h;
+    double rss = 0.0;
+    for (int i = 1; i <= n; i++) {
+        double r = (-u[i - 1] + 2.0 * u[i] - u[i + 1]) / h2 - f[i];
+        rss += r * r;
     }
-    return diff;
+    return sqrt(rss / n);
 }

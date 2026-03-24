@@ -5,7 +5,7 @@
 
 #define DEFAULT_N     2000
 #define DEFAULT_ITERS 5000
-#define TOLERANCE     1e-8
+#define TOLERANCE     1e-6
 #define CACHE_LINE    64
 
 /*
@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
         for (int i = 1; i <= n; i++)
             u_new[i] = 0.5 * (u[i - 1] + u[i + 1] + h2 * f[i]);
 
-        double diff = local_max_diff(u_new, u, 1, n);
+        double diff = rms_residual(u_new, f, n, h);
 
         double *tmp = u; u = u_new; u_new = tmp;
 
