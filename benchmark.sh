@@ -36,9 +36,9 @@ export LC_NUMERIC=C
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 RESULTS_DIR="results"
-GRID_SIZES=(500 1000 2000 4000 8000)
+GRID_SIZES=(500 1000 2000 4000 6000 8000)
 MAX_ITERS=5000
-REPETITIONS=5
+REPETITIONS=10
 PARALLEL_COUNTS=(2 4 6 8 12)
 
 CSV_HEADER="suite,impl,parallelism,grid_size,repetition,wall_time_ms"
