@@ -1,5 +1,5 @@
 CC        = gcc
-NOOPT     = -O2 -Wall -Wextra
+NOOPT     = -Wall -Wextra
 BEST      = -O3 -Wall -march=native -funroll-loops -flto -ffast-math -fomit-frame-pointer
 LDFLAGS   = -lm -lpthread
 IFLAGS    = -Iinclude

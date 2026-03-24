@@ -36,8 +36,8 @@ export LC_NUMERIC=C
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 RESULTS_DIR="results"
-GRID_SIZES=(500 1000 2000 4000 6000 8000)
-MAX_ITERS=5000
+GRID_SIZES=(100000 300000 500000 700000 900000 1000000 3000000)
+MAX_ITERS=5000 #TODO: increase to 10000 or more for more stable measurements (but beware of long runtimes on large grids)
 REPETITIONS=10
 PARALLEL_COUNTS=(2 4 6 8 12)
 
@@ -150,10 +150,14 @@ restore_system() {
 
     if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
         log_info "Re-enabling AMD CPU boost"
-        echo 1 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null             && log_ok "AMD boost re-enabled"             || log_error "Failed to re-enable AMD boost"
+        echo 1 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null \
+            && log_ok "AMD boost re-enabled" \
+            || log_error "Failed to re-enable AMD boost"
     elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
         log_info "Re-enabling Intel turbo boost"
-        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null             && log_ok "Intel turbo re-enabled"             || log_error "Failed to re-enable Intel turbo"
+        echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null \
+            && log_ok "Intel turbo re-enabled" \
+            || log_error "Failed to re-enable Intel turbo"
     fi
 
     log_info "Restoring graphical.target"
@@ -297,14 +301,17 @@ measure_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# Summary table with speedup relative to a reference row
+# Summary table with speedup relative to serial_std (always from data_serial.csv)
 # ---------------------------------------------------------------------------
 print_summary() {
-    local suite="$1" ref_impl="$2" ref_par="$3"
+    local suite="$1"
     local csv="${RESULTS_DIR}/data_${suite}.csv"
+    local ref_csv="${RESULTS_DIR}/data_serial.csv"
     local summary="${RESULTS_DIR}/summary_${suite}.txt"
     local tmpavg="${RESULTS_DIR}/.avgs_${suite}.tmp"
+    local tmpref="${RESULTS_DIR}/.avgs_ref.tmp"
 
+    # Average wall times for every (impl, parallelism, grid_size) in this suite
     awk -F',' '
     NR==1 { next }
     {
@@ -318,11 +325,27 @@ print_summary() {
         }
     }' "${csv}" | sort -t'|' -k1,1 -k2,2n -k3,3n > "${tmpavg}"
 
+    # Reference averages always come from the serial suite CSV
     declare -A REF_AVG
-    while IFS='|' read -r impl par size avg; do
-        [[ "${impl}" == "${ref_impl}" && "${par}" == "${ref_par}" ]] \
-            && REF_AVG["${size}"]="${avg}"
-    done < "${tmpavg}"
+    if [[ -f "${ref_csv}" ]]; then
+        awk -F',' '
+        NR==1 { next }
+        $2=="serial_std" && $3=="0" {
+            key = $4
+            sum[key] += $6; cnt[key]++
+        }
+        END {
+            for (k in sum) printf "%s|%.3f\n", k, sum[k]/cnt[k]
+        }' "${ref_csv}" > "${tmpref}"
+
+        while IFS='|' read -r size avg; do
+            REF_AVG["${size}"]="${avg}"
+        done < "${tmpref}"
+        rm -f "${tmpref}"
+    else
+        log_error "Reference CSV not found: ${ref_csv}"
+        log_error "Run the 'serial' suite first to establish the baseline."
+    fi
 
     {
         echo ""
@@ -333,7 +356,7 @@ print_summary() {
         echo "Grid sizes  : ${GRID_SIZES[*]}"
         echo "Max iters   : ${MAX_ITERS}"
         echo "Repetitions : ${REPETITIONS}"
-        echo "Reference   : ${ref_impl} (par=${ref_par})"
+        echo "Reference   : serial_std (from data_serial.csv)"
         echo ""
         echo "Average wall time (ms)"
         printf '%0.s=' {1..90}; echo ""
@@ -394,7 +417,7 @@ print_summary() {
         done
 
         echo ""
-        echo "Speedup = T(${ref_impl}) / T(row)  [>1 means faster than reference]"
+        echo "Speedup = T(serial_std) / T(row)  [>1 means faster than reference]"
         printf '%0.s=' {1..90}; echo ""
     } | tee "${summary}"
 
@@ -411,7 +434,7 @@ run_suite_serial() {
         "serial_std|./bin/serial_std|0"
     )
     measure_entries "serial" "${entries[@]}"
-    print_summary   "serial" "serial_std" "0"
+    print_summary   "serial"
 }
 
 run_suite_compiler() {
@@ -419,7 +442,7 @@ run_suite_compiler() {
         "serial_opt|./bin/serial_opt|0"
     )
     measure_entries "compiler" "${entries[@]}"
-    print_summary   "compiler" "serial_std" "0"
+    print_summary   "compiler"
 }
 
 run_suite_cache() {
@@ -427,11 +450,11 @@ run_suite_cache() {
         "serial_cache|./bin/serial_cache|0"
     )
     measure_entries "cache" "${entries[@]}"
-    print_summary   "cache" "serial_std" "0"
+    print_summary   "cache"
 }
 
 run_suite_parallel() {
-    local entries=("")
+    local entries=()
     for p in "${PARALLEL_COUNTS[@]}"; do
         entries+=("threads|./bin/threads|${p}")
     done
@@ -439,7 +462,7 @@ run_suite_parallel() {
         entries+=("processes|./bin/processes|${p}")
     done
     measure_entries "parallel" "${entries[@]}"
-    print_summary   "parallel" "serial_std" "0"
+    print_summary   "parallel"
 }
 
 # ---------------------------------------------------------------------------
