@@ -1,0 +1,258 @@
+\section{Marco Teórico}
+
+\subsection{Computación de Alto Rendimiento (HPC)}
+
+La Computación de Alto Rendimiento (HPC, por sus siglas en inglés) consiste en la
+agregación de potencia de cálculo a través de arquitecturas paralelas para resolver
+problemas científicos y tecnológicos de extrema complejidad \parencite{hager2010hpc}. Esta
+disciplina permite ejecutar algoritmos y modelados matemáticos que resultarían
+inabarcables para un sistema tradicional debido a restricciones de tiempo y recursos de
+hardware. Al dividir cargas masivas de trabajo en instrucciones más pequeñas que se
+procesan simultáneamente, HPC maximiza la velocidad de procesamiento de datos y la
+obtención de resultados en la ingeniería \parencite{patterson2017computer}.
+
+Históricamente, el aumento de la frecuencia de reloj en los microprocesadores permitía
+acelerar la ejecución de algoritmos secuenciales de forma directa. Sin embargo, tras
+alcanzar los límites físicos y térmicos del silicio, la industria se desplazó hacia
+arquitecturas multinúcleo que exigen un paradigma de programación paralela
+\parencite{patterson2017computer}. Bajo este enfoque, el diseño de software eficiente requiere
+distribuir la carga de trabajo de manera concurrente, haciendo del análisis de algoritmos
+iterativos numéricos, como el método de Jacobi, un caso de estudio en HPC.
+
+\subsection{La Ecuación de Poisson en 1D}
+
+La ecuación de Poisson en una dimensión es una ecuación diferencial de segundo orden de
+la forma:
+\begin{equation}
+    -\frac{d^2u}{dx^2} = f(x)
+    \label{eq:poisson_1d}
+\end{equation}
+definida sobre un dominio cerrado $[a, b]$, donde $f(x) \in C[a, b]$ es una función de
+forzamiento dada \parencite{burkardt2011jacobi}. Para garantizar la unicidad de la solución,
+esta ecuación se complementa con condiciones de frontera de Dirichlet en los extremos del
+dominio:
+\begin{equation}
+    u(a) = u_a, \qquad u(b) = u_b
+    \label{eq:dirichlet}
+\end{equation}
+Un ejemplo concreto y representativo se define sobre el intervalo $[0, 1]$ con condiciones
+$u(0) = u(1) = 0$, función de forzamiento $f(x) = -x(x+3)e^x$ y solución analítica
+exacta $u(x) = x(x-1)e^x$.
+
+La ecuación de Poisson es la representación estacionaria de la ecuación de calor y
+aparece de forma ubícua en simulación de fluidos, electrostática, mecánica de sólidos y
+transferencia de calor \parencite{elman2005finite}. Su relevancia en HPC radica en que su
+resolución numérica, especialmente para dominios de alta dimensión o mallas finas, genera
+sistemas lineales de gran escala cuyo costo computacional motiva el uso de métodos
+iterativos y estrategias de paralelismo \parencite{burkardt2011jacobi}.
+
+\subsection{Discretización del Operador de Poisson}
+
+La solución numérica de la ecuación de Poisson requiere reemplazar el operador
+diferencial continuo por una aproximación discreta sobre una malla de $N$ nodos $x_j$
+distribuidos uniformemente en $[a, b]$ con espaciado $h = (b-a)/(N-1)$
+\parencite{burkardt2011jacobi}. Aplicando diferencias finitas centradas, la segunda derivada en
+el nodo $x_j$ se aproxima mediante el cociente de diferencias:
+\begin{equation}
+    -\frac{d^2u}{dx^2}(x_j) \approx \frac{-u_{j-1} + 2u_j - u_{j+1}}{h^2}
+    \label{eq:fd_stencil}
+\end{equation}
+Esta expresión es una aproximación de segundo orden al operador de Poisson y constituye
+la ecuación discreta en cada nodo interior de la malla \parencite{burkardt2011jacobi}. Para
+garantizar que los errores de discretización disminuyan apropiadamente al refinar la
+malla, se selecciona una secuencia anidada de grillas con $n_k = 2^k + 1$ nodos, de
+forma que el espaciado $h_k = (b-a)/2^k$ converge a cero conforme $k \to \infty$.
+
+\subsection{El Sistema Lineal Discretizado}
+
+Al aplicar las ecuaciones de diferencias finitas en todos los nodos interiores, junto con
+las condiciones de frontera de Dirichlet, se obtiene un sistema lineal
+$A \cdot \mathbf{u} = \mathbf{f}$ de dimensión $N \times N$ \parencite{burkardt2011jacobi}.
+La matriz del sistema $h^2 A$ es tridiagonal, simétrica y definida positiva, con la
+estructura:
+\begin{equation}
+    h^2 A =
+    \begin{pmatrix}
+        1  & 0  & 0  & 0  & \cdots & 0 \\
+        -1 & 2  & -1 & 0  & \cdots & 0 \\
+        0  & -1 & 2  & -1 & \cdots & 0 \\
+        \vdots & & \ddots & \ddots & \ddots & \vdots \\
+        0  & 0  & \cdots & -1 & 2  & -1 \\
+        0  & 0  & \cdots & 0  & 0  & 1
+    \end{pmatrix}
+    \label{eq:matriz_tridiagonal}
+\end{equation}
+Las propiedades de simetría y definición positiva son condiciones suficientes para
+garantizar la convergencia de los métodos iterativos clásicos, en particular la iteración
+de Jacobi \parencite{burkardt2011jacobi}. Este sistema presenta una estructura dispersa
+(\textit{sparse}) altamente favorable desde el punto de vista computacional, ya que cada
+fila contiene a lo sumo tres elementos no nulos, lo que reduce significativamente el costo
+de memoria y operaciones por iteración \parencite{barrett1994templates}.
+
+\subsection{El Método Iterativo de Jacobi}
+
+Dado un sistema lineal $A \cdot \mathbf{x} = \mathbf{f}$ y una aproximación inicial
+$\mathbf{x}^{(0)}$, la iteración de Jacobi genera una secuencia de aproximaciones
+$\mathbf{x}^{(0)}, \mathbf{x}^{(1)}, \mathbf{x}^{(2)}, \ldots$ mediante la actualización
+simultánea de todos los componentes de la solución \parencite{burkardt2011jacobi}. La
+actualización del $i$-ésimo componente en la iteración $(k+1)$ se define como:
+\begin{equation}
+    x_i^{(k+1)} = \frac{f_i - \displaystyle\sum_{j \neq i} A_{ij} \cdot x_j^{(k)}}{A_{ii}}
+    \label{eq:jacobi_scalar}
+\end{equation}
+Bajo la descomposición matricial $A = L + D + U$, donde $L$, $D$ y $U$ son las partes
+triangular inferior, diagonal y triangular superior respectivamente, la iteración se
+expresa de forma vectorizada como:
+\begin{equation}
+    \mathbf{x}^{(k+1)} = D^{-1}\bigl(\mathbf{f} - (L + U)\,\mathbf{x}^{(k)}\bigr)
+    \label{eq:jacobi_vectorized}
+\end{equation}
+Esta formulación vectorizada es computacionalmente eficiente, pues la actualización de
+cada componente en una iteración es completamente independiente de los demás, propiedad
+que resulta fundamental para explotar el paralelismo de datos mediante hilos y procesos
+\parencite{burkardt2011jacobi}.
+
+\subsection{Convergencia del Método de Jacobi}
+
+El criterio de parada de la iteración de Jacobi se basa en el monitoreo del residual
+$\mathbf{r}^{(k)} = A \cdot \mathbf{x}^{(k)} - \mathbf{f}$ \parencite{burkardt2011jacobi}.
+La métrica estándar empleada es la norma RMS del residual:
+\begin{equation}
+    \text{Residual RMS} = \frac{\|\mathbf{r}^{(k)}\|}{\sqrt{N}} \leq \varepsilon
+    \label{eq:residual_rms}
+\end{equation}
+que permite comparar la convergencia entre sistemas de diferentes tamaños de malla con
+una tolerancia fija $\varepsilon$ \parencite{burkardt2011jacobi}. Un aspecto crítico del método
+de Jacobi aplicado al problema de Poisson es su convergencia lenta: el número de
+iteraciones $m_k$ requeridas crece aproximadamente como $m_k \sim \mathcal{O}(n_k^2)$,
+implicando que el costo computacional total escala como $\mathcal{O}(n_k^3)$. 
+Esta degradación severa al refinar la malla motiva directamente la necesidad de paralelismo: al 
+distribuir las iteraciones entre múltiples hilos o procesos, es posible reducir el tiempo de 
+ejecución real incluso cuando el número total de operaciones aritméticas permanece constante \parencite{briggs2000multigrid}.
+
+\subsection{Programación Secuencial y Concurrente}
+
+La programación secuencial es el paradigma clásico donde las instrucciones de un
+algoritmo se ejecutan de forma estrictamente lineal sobre un único núcleo de
+procesamiento \parencite{benari2006principles}. En este modelo, el límite de rendimiento está
+directamente dictado por la frecuencia de reloj del hardware y el número de iteraciones
+del algoritmo. Como respuesta a estas limitaciones, la programación concurrente estructura
+el software en múltiples hilos o tareas independientes que hacen progreso de forma
+superpuesta en el tiempo, reduciendo drásticamente el tiempo de ejecución en problemas de
+cómputo intensivo.
+
+Para el algoritmo de Jacobi, la paralelización es conceptualmente directa: dado que la
+actualización de cada nodo $x_i^{(k+1)}$ depende únicamente de los valores de la
+iteración anterior $\mathbf{x}^{(k)}$, el cálculo de todos los nodos interiores en una
+misma iteración es completamente independiente entre sí \parencite{burkardt2011jacobi}. Esta
+independencia de datos por iteración elimina las condiciones de carrera durante la fase de
+actualización, permitiendo distribuir los nodos entre hilos o procesos sin necesidad de
+sincronización intra-iteración, aunque sí se requiere una barrera de sincronización entre
+iteraciones consecutivas \parencite{silberschatz2018os}.
+
+\subsection{Hilos (Threads) y la Librería Pthreads}
+
+En el ámbito de la computación paralela, el modelo de memoria compartida establece que
+múltiples hilos de ejecución creados por la librería POSIX Threads (Pthreads) operan
+dentro del mismo espacio de direccionamiento lógico del proceso padre
+\parencite{silberschatz2018os}. A nivel de arquitectura, esto significa que todos los núcleos
+del procesador acceden de forma directa y simultánea a las mismas estructuras de datos
+residentes en la memoria principal, sin necesidad de copiar o transmitir datos entre
+unidades de procesamiento. Para el algoritmo de Jacobi, este modelo es altamente
+eficiente, pues el vector de solución $\mathbf{u}$ y el vector de forzamiento $\mathbf{f}$
+se comparten íntegramente entre todos los hilos, y cada uno opera únicamente sobre un
+subconjunto disjunto de nodos, eliminando la contención de escritura
+\parencite{burkardt2011jacobi}.
+
+La creación de un hilo mediante \texttt{pthread\_create} y su sincronización mediante
+\texttt{pthread\_join} introduce una sobrecarga fija por hilo que resulta despreciable
+cuando el número de nodos por hilo es suficientemente grande \parencite{silberschatz2018os}.
+No obstante, entre iteraciones de Jacobi es imprescindible garantizar que todos los hilos
+hayan completado la actualización de sus nodos antes de iniciar la siguiente iteración;
+esto se logra mediante una barrera de sincronización (\texttt{pthread\_barrier\_wait}),
+cuyo costo adicional es un factor determinante en el análisis de escalabilidad
+\parencite{hager2010hpc}.
+
+\subsection{Procesos y la Llamada al Sistema Fork}
+
+La paralelización mediante la llamada al sistema \texttt{fork()} crea procesos hijos
+independientes que no comparten espacio de memoria con el proceso padre, operando bajo
+el modelo de memoria distribuida dentro de un mismo nodo físico \parencite{silberschatz2018os}.
+Cada proceso hijo posee su propia copia privada del espacio de direcciones, obtenida
+mediante el mecanismo de \textit{copy-on-write} del sistema operativo, lo que elimina las
+condiciones de carrera pero introduce una sobrecarga significativa en la creación, gestión
+y comunicación entre procesos. Para el algoritmo de Jacobi,
+cada proceso hijo calcula la actualización de un subconjunto de nodos, pero los resultados
+parciales deben comunicarse al proceso padre mediante mecanismos de IPC
+(\textit{Inter-Process Communication}) como tuberías (\textit{pipes}) o memoria
+compartida explícita (\texttt{shmget}/\texttt{mmap}) antes de iniciar la siguiente
+iteración.
+
+La principal desventaja del modelo basado en \texttt{fork} para algoritmos iterativos
+como Jacobi reside en el costo acumulado de esta comunicación inter-iteración
+\parencite{silberschatz2018os}. Dado que el método de Jacobi puede requerir miles de
+iteraciones para converger, especialmente en mallas finas, la sobrecarga de
+sincronizar resultados entre procesos en cada iteración puede superar ampliamente la
+ganancia obtenida por la distribución del cómputo, comportamiento análogo al evidenciado
+previamente en la paralelización por procesos de la multiplicación de matrices
+\parencite{hager2010hpc}.
+
+\subsection{Jerarquía de Caché y Localidad de Memoria}
+
+El rendimiento de una aplicación HPC no depende exclusivamente de la capacidad matemática
+del procesador, sino también del acceso al subsistema de memoria \parencite{drepper2007memory}.
+Los procesadores modernos integran una jerarquía de memoria ultrarrápida (L1, L2 y L3)
+cuya unidad mínima de transferencia es la \textit{cache line} de 64 bytes. Para el algoritmo de Jacobi en 1D, el patrón de acceso al
+vector de solución $\mathbf{u}$ es estrictamente secuencial (nodo $j-1$, $j$, $j+1$),
+lo que favorece de forma natural la localidad espacial de memoria y maximiza el
+aprovechamiento de la caché, a diferencia de los accesos por columnas del caso matricial
+\parencite{patterson2017computer}.
+
+Sin embargo, en la implementación paralela, la división del vector entre múltiples hilos
+introduce el fenómeno de \textit{false sharing}: si dos hilos adyacentes operan sobre
+nodos que residen en la misma línea de caché, las escrituras de un hilo invalidan la
+línea en el caché del otro, generando una contención invisible a nivel de código que
+penaliza severamente el rendimiento. Garantizar que cada hilo
+opere sobre bloques de nodos suficientemente grandes, y alineados con el tamaño de la
+línea de caché, es una condición necesaria para minimizar este efecto en la
+implementación paralela del método de Jacobi \parencite{drepper2007memory}.
+
+\subsection{Métricas de Rendimiento en Computación Paralela}
+
+Para cuantificar el éxito de una implementación paralela, la literatura científica emplea
+métricas matemáticas estandarizadas \parencite{hager2010hpc}. La métrica fundamental es el
+\textit{Speedup} o Aceleración $S_p$, definido como:
+\begin{equation}
+    S_p = \frac{T_1}{T_p}
+    \label{eq:speedup}
+\end{equation}
+donde $T_1$ es el tiempo de ejecución del algoritmo secuencial óptimo y $T_p$ es el
+tiempo paralelo con $p$ unidades de procesamiento \parencite{hager2010hpc}. Derivada de esta
+métrica, la Eficiencia $E_p$ evalúa el grado de aprovechamiento de los recursos físicos:
+\begin{equation}
+    E_p = \frac{S_p}{p} = \frac{T_1}{p \cdot T_p}
+    \label{eq:eficiencia}
+\end{equation}
+
+El desempeño asintótico de estos sistemas está regido por la \textbf{Ley de Amdahl}, que
+establece que el Speedup máximo está limitado por la fracción no paralelizable $(1-f)$
+del algoritmo:
+\begin{equation}
+    S_{\text{Amdahl}} \leq \frac{1}{(1-f) + \dfrac{f}{p}}
+    \label{eq:amdahl}
+\end{equation}
+Para el algoritmo de Jacobi, la fracción secuencial incluye la evaluación del residual
+global de convergencia y la barrera de sincronización entre iteraciones, que no pueden
+paralelizarse y constituyen el cuello de botella principal según este modelo
+\parencite{patterson2017computer}. En contraste, la \textbf{Ley de Gustafson-Barsis} describe
+la escalabilidad débil y argumenta que, al incrementar el tamaño de la malla $N$, la
+fracción paralelizable del trabajo crece proporcionalmente, haciendo que la porción
+secuencial pierda peso relativo:
+\begin{equation}
+    S_{\text{Gustafson}} = (1-f) + p \cdot f
+    \label{eq:gustafson}
+\end{equation}
+Bajo la visión de Gustafson, a medida que la malla se refina, la cantidad de operaciones
+paralelas aumenta drásticamente, mitigando el cuello de botella pronosticado por Amdahl y
+permitiendo un Speedup escalable con el número de unidades de procesamiento
+\parencite{gustafson1988reevaluating}.

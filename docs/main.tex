@@ -1,0 +1,66 @@
+\documentclass[12pt,letterpaper]{article}
+
+% Paquetes básicos
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage[left=3cm,right=2cm,top=2.5cm,bottom=2.5cm]{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage[hypertexnames=false]{hyperref}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{csquotes}
+\usepackage[
+    style=apa,
+    backend=biber,
+    language=spanish,
+    sorting=nyt,
+    maxbibnames=99,
+    uniquename=init,
+    uniquelist=true
+]{biblatex}
+\DeclareLanguageMapping{spanish}{spanish-apa}
+\addbibresource{references.bib}
+
+% Configuración de interlineado
+\onehalfspacing
+
+% Información del documento
+\title{\textbf{Multiplicación de matrices de forma secuencial y concurrente}}
+\author{
+   Jhoan Esteban Corrales Rodríguez \\
+   Juan Esteban Cardona Blandón \\
+   Sebastian Perdomo \\
+   Juana Valentina Martínez}
+\date{\today}
+
+\begin{document}
+
+% Portada
+\input{caps/front_page.tex}
+
+% Tabla de contenidos
+\newpage
+\tableofcontents
+\newpage
+
+\input{caps/abstract.tex}
+\input{caps/introduction.tex}
+\input{caps/theorical_framework.tex}
+\input{caps/conceptual_framework.tex}
+
+\input{caps/development.tex}
+
+\input{caps/test.tex}
+
+\input{caps/comparison.tex}
+
+\input{caps/conclusions.tex}
+
+\newpage
+\printbibliography[title={Referencias}]
+
+\end{document}
