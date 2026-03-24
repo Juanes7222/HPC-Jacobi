@@ -1,0 +1,179 @@
+\section{Desarrollo de la implementación}
+
+Esta sección explica cómo se construyó la implementación del solver de Poisson 1D con Jacobi, no solo desde el resultado final, sino también desde las decisiones que se tomaron durante el desarrollo. La idea fue mantener una base matemática única y variar únicamente la estrategia computacional para poder comparar rendimiento de forma justa.
+
+\subsection{Problema numérico base}
+
+El código resuelve la ecuación de Poisson 1D con condiciones de Dirichlet homogéneas:
+
+\begin{equation}
+-u''(x) = f(x), \qquad x \in (0,1), \qquad u(0)=u(1)=0.
+\end{equation}
+
+El problema específico utilizado en todas las pruebas es el definido por Burkardt (2011): la función forzante es
+
+\begin{equation}
+f(x) = -x(x+3)e^x,
+\end{equation}
+
+cuya solución analítica exacta es
+
+\begin{equation}
+u(x) = x(x-1)e^x.
+\end{equation}
+
+Esta elección permite calcular el error máximo frente a la solución exacta al final de cada ejecución mediante la función \texttt{max\_error}, lo que sirve para verificar que todas las variantes producen el mismo resultado numérico.
+
+Para discretizar el dominio se usa una malla uniforme de $n$ puntos interiores, con paso:
+
+\begin{equation}
+h = \frac{1}{n+1}.
+\end{equation}
+
+En cada punto interior $i$ se aplica diferencias finitas centradas:
+
+\begin{equation}
+\frac{-u_{i-1} + 2u_i - u_{i+1}}{h^2} = f_i.
+\end{equation}
+
+Despejando $u_i$ se obtiene la iteración de Jacobi usada en todas las variantes:
+
+\begin{equation}
+u_i^{(k+1)} = \frac{1}{2}\left(u_{i-1}^{(k)} + u_{i+1}^{(k)} + h^2 f_i\right).
+\label{eq:jacobi}
+\end{equation}
+
+La convergencia se verifica con el residual RMS calculado en la función \texttt{rms\_residual}:
+
+\begin{equation}
+\mathrm{RMS}(r) = \sqrt{\frac{1}{n}\sum_{i=1}^{n} r_i^2}, \qquad r_i = \frac{-u_{i-1}+2u_i-u_{i+1}}{h^2} - f_i.
+\end{equation}
+
+Se detienen las iteraciones cuando $\mathrm{RMS}(r) < 10^{-6}$ o cuando se alcanza el máximo de iteraciones configurado. Este criterio es el recomendado por Burkardt (2011, sección 9): medir la diferencia entre iterados sucesivos $\|u^{(k+1)} - u^{(k)}\|$ puede converger a cero mucho antes de que la solución sea buena, y no garantiza que el sistema lineal esté satisfecho con la tolerancia deseada.
+
+\subsection{Arquitectura del código}
+
+Antes de entrar en cada variante, se definieron tres principios de implementación:
+
+\begin{enumerate}[leftmargin=1.2cm]
+    \item \textbf{Misma lógica numérica para todas las variantes}: si el algoritmo cambia, la comparación deja de ser limpia.
+    \item \textbf{Separación entre utilidades numéricas y motor de ejecución}: funciones comunes en \texttt{poisson.c} y estrategias en archivos separados.
+    \item \textbf{Costo de sincronización visible}: diseñar versiones donde se pueda observar claramente el precio de cada modelo (secuencial, hilos y procesos).
+\end{enumerate}
+
+Esta estructura permitió que cada archivo del directorio \texttt{src} tenga una responsabilidad clara: utilidades compartidas en \texttt{poisson.c}/\texttt{poisson.h} y una estrategia por archivo ejecutable.
+
+\subsection{Arquitectura general de datos}
+
+Todas las implementaciones comparten la misma estructura de memoria de doble buffer:
+
+\begin{itemize}[leftmargin=1.5cm]
+    \item \texttt{u}: estado actual de la solución en la iteración $k$.
+    \item \texttt{u\_new}: estado calculado en la iteración $k+1$.
+    \item \texttt{f}: término fuente, calculado una sola vez antes del bucle.
+\end{itemize}
+
+El uso de doble buffer es necesario para que la iteración de Jacobi sea correcta: cada \texttt{u\_new[i]} depende exclusivamente de valores de \texttt{u} de la iteración anterior, nunca de valores ya actualizados en la misma pasada. Al final de cada iteración se intercambian los punteros, sin copiar datos.
+
+\begin{figure}[H]
+\centering
+\fbox{%
+\begin{minipage}{0.92\textwidth}
+\centering
+\textbf{Flujo de una iteración de Jacobi (conceptual)}\\[4pt]
+Leer \texttt{u} y \texttt{f} $\rightarrow$ Calcular \texttt{u\_new[1..n]} $\rightarrow$ Calcular residual sobre \texttt{u\_new} $\rightarrow$ Intercambiar punteros\\[2pt]
+Si $\mathrm{RMS}(r) < 10^{-6}$: terminar; si no: continuar
+\end{minipage}}
+\caption{Ciclo general compartido por todas las variantes.}
+\label{fig:jacobi_flujo_general}
+\end{figure}
+
+\subsection{Implementación secuencial estándar}
+
+La versión secuencial estándar (\texttt{serial\_std.c}) fue la primera implementación y se dejó como línea base para medir todas las demás. No aplica ninguna optimización explícita de memoria ni de compilador; los vectores se reservan con \texttt{calloc} sin restricciones de alineación.
+
+El bucle principal recorre $i = 1, \ldots, n$, aplica la ecuación~\eqref{eq:jacobi} sobre \texttt{u\_new}, y calcula a continuación el residual RMS sobre \texttt{u\_new} antes del intercambio de punteros. Es importante notar que el residual se evalúa sobre el nuevo iterado, no sobre el estado anterior, de modo que el criterio de parada refleja la calidad de la solución que se usará en la siguiente iteración.
+
+\subsection{Implementación secuencial con alineación a línea de caché}
+
+Una vez validada la base, se optimizó la gestión de memoria sin cambiar el modelo numérico. Esta versión está en \texttt{serial\_cache.c}.
+
+\textbf{Cambios respecto a la versión estándar:}
+
+\begin{itemize}[leftmargin=1.5cm]
+    \item Reserva alineada con \texttt{aligned\_alloc} a 64 bytes (tamaño de una línea de caché en x86-64).
+    \item Precálculo de $h^2$ fuera del bucle principal, eliminando la multiplicación redundante en cada iteración.
+\end{itemize}
+
+El núcleo de Jacobi accede a los tres vectores de forma estrictamente secuencial, lo que hace que el rendimiento esté dominado por el ancho de banda de memoria más que por la unidad aritmética. La alineación a 64 bytes garantiza que cada vector comience en un límite natural de línea de caché, evitando que el primer elemento de un arreglo quede partido entre dos líneas. Esto hace que las cargas iniciales sean más eficientes y que el prefetcher del hardware trabaje sobre líneas completas desde el inicio del bucle.
+
+\begin{figure}[H]
+\centering
+\fbox{%
+\begin{minipage}{0.92\textwidth}
+\centering
+\textbf{Idea de alineación a línea de caché}\\[4pt]
+\begin{tabular}{@{}l@{}}
+    \texttt{|----------------- 64 B -----------------|--------- 64 B ---------|...}\\
+    \texttt{[u[0] u[1] u[2] u[3] u[4] u[5] u[6] u[7]] [u[8] u[9] ...] ...}
+\end{tabular}\\[4pt]
+Con \texttt{aligned\_alloc}, \texttt{u[0]} cae siempre al inicio de una línea.
+\end{minipage}}
+\caption{Alineación del arreglo de solución respecto a líneas de caché.}
+\label{fig:cache_line_concepto}
+\end{figure}
+
+\subsection{Implementación paralela con hilos (Pthreads)}
+
+La versión con hilos se implementó en \texttt{threads.c}. La función central es \texttt{worker}, que ejecuta el cálculo sobre un subrango contiguo del dominio.
+
+\textbf{Partición del dominio:} se eligió partición por bloques contiguos porque mantiene acceso secuencial dentro de cada hilo, minimiza la coordinación y es directamente comparable con la variante de procesos. Cada hilo $t$ trabaja en el rango $[\text{start}_t, \text{end}_t]$:
+
+\begin{equation}
+\text{chunk} = \left\lfloor \frac{n}{p} \right\rfloor,
+\end{equation}
+
+donde $p$ es el número de hilos. El último hilo absorbe los elementos restantes cuando $n$ no es múltiplo de $p$.
+
+\begin{figure}[H]
+\centering
+\fbox{%
+\begin{minipage}{0.95\textwidth}
+\centering
+\textbf{Particionado conceptual con 4 hilos}\\[4pt]
+\texttt{[1 ....................... n]}\\[2pt]
+T0: \texttt{[1..a]} \quad T1: \texttt{[a+1..b]} \quad T2: \texttt{[b+1..c]} \quad T3: \texttt{[c+1..n]}
+\end{minipage}}
+\caption{Distribución por bloques contiguos en la versión con hilos.}
+\label{fig:particion_hilos}
+\end{figure}
+
+\textbf{Sincronización por iteración:} se usan dos barreras \texttt{pthread\_barrier\_wait} en cada iteración:
+
+\begin{enumerate}[leftmargin=1.2cm]
+    \item Todos los hilos calculan su parte de \texttt{u\_new}.
+    \item \textbf{Barrera 1}: necesaria porque \texttt{rms\_residual} accede a \texttt{u\_new[i-1]} y \texttt{u\_new[i+1]}, que son escritos por hilos vecinos. Sin esta barrera, un hilo podría leer valores aún no escritos por otro.
+    \item El hilo 0 calcula el residual RMS sobre el arreglo \texttt{u\_new} completo, evalúa convergencia e intercambia los punteros \texttt{g\_u} y \texttt{g\_u\_new}.
+    \item \textbf{Barrera 2}: garantiza que todos los hilos observan el swap de punteros antes de comenzar la siguiente iteración. Sin esta barrera, un hilo podría entrar a la siguiente iteración leyendo el puntero anterior.
+\end{enumerate}
+
+Solo el hilo 0 administra convergencia e intercambio de buffers para evitar condiciones de carrera sobre las variables globales \texttt{g\_converged} e \texttt{g\_iters\_done}. El costo adicional del modelo aparece en las barreras, que introducen espera cuando hay desbalance de carga o variación de scheduling entre hilos.
+
+\subsection{Implementación paralela con procesos (fork)}
+
+La variante de procesos se implementó en \texttt{processes.c} para contrastar explícitamente dos modelos de paralelismo: memoria compartida intra-proceso (hilos) y procesos del sistema operativo con memoria compartida explícita vía \texttt{mmap}.
+
+\textbf{Razonamiento de diseño:} se mantuvo exactamente el mismo esquema de partición que en la versión con hilos. De ese modo, la diferencia de rendimiento es atribuible al mecanismo de sincronización y al costo de creación de procesos, no a diferencias en el algoritmo.
+
+\textbf{Mecanismo de memoria compartida:} se reserva un único bloque con \texttt{mmap} y la bandera \texttt{MAP\_SHARED | MAP\_ANONYMOUS}, en el que se ubican \texttt{u}, \texttt{u\_new} y \texttt{f} de forma contigua. Usar una sola llamada a \texttt{mmap} mantiene los tres arreglos en páginas físicas contiguas y evita múltiples llamadas al sistema.
+
+\textbf{Sincronización por iteración:}
+
+\begin{enumerate}[leftmargin=1.2cm]
+    \item El proceso padre crea $p$ hijos con \texttt{fork} al inicio de cada iteración.
+    \item Cada hijo calcula su tramo de \texttt{u\_new} y termina con \texttt{exit(0)}.
+    \item El padre espera a todos con \texttt{waitpid}: este es el punto de sincronización.
+    \item El padre calcula el residual RMS sobre \texttt{u\_new} completo y realiza el intercambio de punteros.
+\end{enumerate}
+
+La diferencia estructural respecto a la versión con hilos es que aquí la sincronización no es una barrera interna: es la creación y destrucción de procesos en cada iteración. Esto introduce un overhead proporcional a $p \times \text{iter}$ llamadas \texttt{fork}/\texttt{waitpid}, cuyo costo relativo crece a medida que aumenta el número de procesos o la cantidad de iteraciones.
