@@ -37,7 +37,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 RESULTS_DIR="results"
 GRID_SIZES=(100000 300000 500000 700000 900000 1000000 3000000)
-MAX_ITERS=5000 #TODO: increase to 10000 or more for more stable measurements (but beware of long runtimes on large grids)
+MAX_ITERS=10000 #TODO: increase to 10000 or more for more stable measurements (but beware of long runtimes on large grids)
 REPETITIONS=10
 PARALLEL_COUNTS=(2 4 6 8 12)
 
