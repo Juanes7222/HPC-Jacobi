@@ -271,7 +271,7 @@ run_suite_threads() {
 }
 
 run_suite_procs() {
-    local max_n="${GRID_SIZES[-1]}"
+    local max_n="${GRID_SIZES[-2]}"
     setup_csv "${CSV_PROCS}"
     for p in "${PARALLEL_COUNTS[@]}"; do
         measure_impl "${CSV_PROCS}" "processes" "processes" "./bin/processes" "${p}" "${max_n}"
