@@ -36,11 +36,11 @@
  */
 
 typedef struct {
-    sem_t workers_done;
-    sem_t go;
-    int   flip;
-    int   converged;
-    int   iters_done;
+    sem_t    workers_done;
+    sem_t    go;
+    volatile int flip;
+    volatile int converged;
+    int      iters_done;
 } SharedControl;
 
 typedef struct {
