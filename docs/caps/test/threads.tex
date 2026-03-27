@@ -5,11 +5,39 @@
 
 Para esta implementación se utilizó la biblioteca de hilos POSIX (pthreads) para crear múltiples hilos que ejecutan el algoritmo de Jacobi en paralelo. Cada hilo se encarga de procesar una parte del arreglo, lo que permite aprovechar la capacidad de procesamiento de múltiples núcleos del CPU. Se realizaron pruebas con diferentes números de hilos (2, 4, 6, 8 y 12) para evaluar el impacto en el rendimiento. Estos fueron los resultados obtenidos:
 
-\begin{table}
+\begin{table}[H]
    \centering
-   \includegraphics{images/tables/threads_time.png}
+   \includegraphics[width=1\textwidth]{images/tables/threads2_time.png}
    \caption{Resultados del algoritmo paralelizado con hilos}
-   \label{tab:threads}
+   \label{tab:threads2}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/threads4_time.png}
+   \caption{Resultados del algoritmo paralelizado con hilos}
+   \label{tab:threads4}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/threads6_time.png}
+   \caption{Resultados del algoritmo paralelizado con hilos}
+   \label{tab:threads6}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/threads8_time.png}
+   \caption{Resultados del algoritmo paralelizado con hilos}
+   \label{tab:threads8}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/threads12_time.png}
+   \caption{Resultados del algoritmo paralelizado con hilos}
+   \label{tab:threads12}
 \end{table}
 
 \begin{table}[H]
@@ -18,6 +46,13 @@ Para esta implementación se utilizó la biblioteca de hilos POSIX (pthreads) pa
    \caption{Speedup del algoritmo paralelizado con hilos}
    \label{tab:threads_speedup}
 \end{table}
+
+\begin{figure}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/charts/threads_time.png}
+   \caption{Comparación del tiempo de ejecución entre el algoritmo secuencial y el algoritmo paralelizado con hilos}
+   \label{fig:chart_threads_time}
+\end{figure}
 
 \begin{figure}[H]
    \centering

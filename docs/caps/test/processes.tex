@@ -5,23 +5,58 @@
 
 Para esta implementación se utilizó la biblioteca de procesos POSIX (fork) para crear múltiples procesos que ejecutan el algoritmo de Jacobi en paralelo. Cada proceso se encarga de procesar una parte del arreglo, lo que permite aprovechar la capacidad de procesamiento de múltiples núcleos del CPU. Se realizaron pruebas con diferentes números de procesos (2, 4, 6, 8 y 12) alienados a las pruebas con hilos realizadas para evaluar el impacto en el rendimiento. Estos fueron los resultados obtenidos:
 
-\begin{table}
+\begin{table}[H]
    \centering
-   \includegraphics{images/tables/processes_time.png}
+   \includegraphics[width=1\textwidth]{images/tables/processes2_time.png}
    \caption{Resultados del algoritmo paralelizado por procesos}
-   \label{tab:processes}
+   \label{tab:processes2}
 \end{table}
 
-\begin{table}
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/processes4_time.png}
+   \caption{Resultados del algoritmo paralelizado por procesos}
+   \label{tab:processes4}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/processes6_time.png}
+   \caption{Resultados del algoritmo paralelizado por procesos}
+   \label{tab:processes6}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/processes8_time.png}
+   \caption{Resultados del algoritmo paralelizado por procesos}
+   \label{tab:processes8}
+\end{table}
+
+\begin{table}[H]
+   \centering
+   \includegraphics[width=1\textwidth]{images/tables/processes12_time.png}
+   \caption{Resultados del algoritmo paralelizado por procesos}
+   \label{tab:processes12}
+\end{table}
+\begin{table}[H]
    \centering
    \includegraphics[width=1\textwidth]{images/tables/processes_speedup.png}
    \caption{Speedup del algoritmo paralelizado por procesos}
    \label{tab:processes_speedup}
 \end{table}
 
-\begin{figure}
+\begin{figure}[H]
    \centering
    \includegraphics[width=1\textwidth]{images/charts/processes_sp.png}
    \caption{Comparación del speedup entre el algoritmo secuencial y el algoritmo paralelizado por procesos}
    \label{fig:chart_processes_speedup}
 \end{figure}
+
+Para esta prueba se puede observar que para $p \geq 6$ no fue posible obtener resultados para $n = 2000$ en un tiempo razonable.
+
+Cuando se ejecutan 6 procesos en una máquina de 6 núcleos, todos los núcleos quedan completamente ocupados. El problema es que en cada iteración del algoritmo, el proceso coordinador necesita despertar a los demás procesos mediante semáforos. Despertar un proceso en el sistema operativo tiene un costo, y ese costo se multiplica cuando no hay núcleos disponibles: el sistema operativo debe interrumpir forzosamente a uno de los procesos en ejecución para cederle el turno al proceso recién despertado. Esta operación ocurre 5 veces por iteración, y para n = 2000 el algoritmo requiere aproximadamente 12 millones de iteraciones para converger, lo que hace que el overhead acumulado de sincronización supere la hora de ejecución por repetición.
+
+La implementación con hilos no presenta este problema porque los hilos pertenecen al mismo proceso y el sistema operativo los gestiona de forma más ligera, sin necesidad de interrumpir otros núcleos para sincronizarlos. Esto se confirma en los datos: con p = 6 y n = 2000, la versión con hilos completó en aproximadamente 141 segundos, mientras que la versión con procesos no logró terminar en más de una hora de ejecución.
+
+Por esta razón, los resultados de la suite de procesos para $p \geq 6$ se reportan únicamente hasta n = 1000.
