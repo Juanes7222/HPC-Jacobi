@@ -1,0 +1,35 @@
+
+%===================================
+%===================================
+\section{Comparaciones}
+\label{sec:Comparaciones}
+
+
+%================================
+\subsection{Secuencial, secuencial optimizado por compilador y secuencial optimizado por cache}
+\label{sec:comparacion_secuencial}
+
+En esta sección se comparan los resultados obtenidos para el algoritmo secuencial, el algoritmo secuencial optimizado por compilador y el algoritmo secuencial optimizado por cache line. Se analizan las diferencias en el rendimiento de cada implementación y se discuten las posibles razones detrás de estas diferencias. Además, se presentan gráficos que muestran la evolución del tiempo de ejecución en función del tamaño del arreglo para cada una de las implementaciones. La tabla del speedup se muestra a continuación:
+
+\begin{table}
+   \centering
+   \includegraphics{images/tables/speedup_seq.png}
+   \caption{Speedup del algoritmo secuencial optimizado por compilador y por cache line en comparación con el algoritmo secuencial}
+   \label{tab:speedup_seq}
+\end{table}
+
+\begin{figure}
+   \centering
+   \includegraphics{images/graphs/sequential_comparison.png}
+   \caption{Comparación del tiempo de ejecución entre el algoritmo secuencial, el algoritmo secuencial optimizado por compilador y el algoritmo secuencial optimizado por cache line}
+   \label{fig:sequential_comparison}
+\end{figure}
+
+\begin{figure}
+   \centering
+   \includegraphics{images/graphs/speedup_seq.png}
+   \caption{Comparación del speedup entre el algoritmo secuencial optimizado por compilador y por cache line en comparación con el algoritmo secuencial}
+   \label{fig:speedup_seq}
+\end{figure}
+
+

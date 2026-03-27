@@ -3,9 +3,8 @@
 
 En esta sección se presentan los resultados obtenidos a partir de la ejecución de las tres implementaciones del algoritmo iterativo de Jacobi para la resolución de la ecuación de Poisson 1D: secuencial, 
 concurrente con hilos y paralela con procesos ademas de las optimizaciones por cache line y por compilador. Además, se incluye un análisis del rendimiento de cada implementación, así como una comparación 
-entre ellas. Para ello, se han utilizado arreglos de diferentes tamaños: 100000, 300000, 500000, 700000, 900000, 1000000 y 3000000. Se han realizado múltiples ejecuciones para cada tamaño de arreglo y 
-cada implementación, con el fin de obtener resultados más estables y confiables. Se definió un número máximo de iteraciones de 10000 para asegurar que el algoritmo converge, aunque esto puede variar dependiendo 
-del tamaño del arreglo y la implementación utilizada si alcanza la convergencia antes del máximo permitido.
+entre ellas. Para ello, se han utilizado arreglos de diferentes tamaños: 100, 200, 500, 1000 y 2000. Se han realizado 10 ejecuciones para cada tamaño de arreglo y 
+cada implementación, con el fin de obtener resultados más estables y confiables. Se definió un número máximo de iteraciones de 20000000 para asegurar que el algoritmo converge en un punto. Se fijó la tolerancia en $10^{-6}$ para determinar la convergencia del algoritmo. Se utilizó el mismo entorno de ejecución para todas las pruebas, con el fin de garantizar la comparabilidad de los resultados.
 
 \input{caps/test/serial.tex}
 
