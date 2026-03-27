@@ -4,32 +4,25 @@
 \section{Comparaciones}
 \label{sec:Comparaciones}
 
+En esta sección se presentan comparaciones entre los diferentes algoritmos implementados, incluyendo el algoritmo secuencial optimizado por compilador, el algoritmo secuencial optimizado por cache line, el algoritmo paralelizado con hilos y el algoritmo paralelizado por procesos. Se analizarán los resultados obtenidos en términos de tiempo de ejecución y speedup para cada caso, destacando las diferencias y similitudes entre las distintas implementaciones. Además, se discutirán las posibles razones detrás de los resultados observados y se ofrecerán conclusiones sobre el rendimiento de cada enfoque en función de los datos recopilados durante las pruebas.
 
-%================================
-\subsection{Secuencial, secuencial optimizado por compilador y secuencial optimizado por cache}
-\label{sec:comparacion_secuencial}
-
-En esta sección se comparan los resultados obtenidos para el algoritmo secuencial, el algoritmo secuencial optimizado por compilador y el algoritmo secuencial optimizado por cache line. Se analizan las diferencias en el rendimiento de cada implementación y se discuten las posibles razones detrás de estas diferencias. Además, se presentan gráficos que muestran la evolución del tiempo de ejecución en función del tamaño del arreglo para cada una de las implementaciones. La tabla del speedup se muestra a continuación:
-
-\begin{table}
+\begin{table}[H]
    \centering
-   \includegraphics{images/tables/speedup_seq.png}
-   \caption{Speedup del algoritmo secuencial optimizado por compilador y por cache line en comparación con el algoritmo secuencial}
-   \label{tab:speedup_seq}
+   \includegraphics[width=1\textwidth]{images/tables/final_speedup.png}
+   \caption{Comparación del speedup entre los diferentes algoritmos} 
 \end{table}
 
-\begin{figure}
+\begin{figure}[H]
    \centering
-   \includegraphics{images/graphs/sequential_comparison.png}
-   \caption{Comparación del tiempo de ejecución entre el algoritmo secuencial, el algoritmo secuencial optimizado por compilador y el algoritmo secuencial optimizado por cache line}
-   \label{fig:sequential_comparison}
+   \includegraphics[width=1\textwidth]{images/charts/final_sp.png}
+   \caption{Comparación del speedup entre los diferentes algoritmos} 
 \end{figure}
 
-\begin{figure}
+\begin{figure}[H]
    \centering
-   \includegraphics{images/graphs/speedup_seq.png}
-   \caption{Comparación del speedup entre el algoritmo secuencial optimizado por compilador y por cache line en comparación con el algoritmo secuencial}
-   \label{fig:speedup_seq}
+   \includegraphics[width=1\textwidth]{images/charts/final_time.png}
+   \caption{Comparación del tiempo de ejecución entre los diferentes algoritmos}
+   \label{fig:chart_final_time}
 \end{figure}
 
 
