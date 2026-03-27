@@ -1,56 +1,51 @@
 #!/usr/bin/env bash
 # =============================================================================
-# benchmark.sh  --  Poisson 1D Jacobi: three experimental suites
+# benchmark.sh  --  Poisson 1D Jacobi: convergence-based speedup study
 #
-# Suite 1 - compiler : serial_std  vs  serial_opt
-#           Does compiler optimization alone beat parallelism?
+# All binaries run until RMS residual < 1e-6. Speedup is always computed as
+# T(serial_std, n) / T(impl, n, p), read from data_serial.csv.
 #
-# Suite 2 - cache    : serial_std  vs  serial_cache
-#           Isolates the effect of cache-line alignment + prefetch.
+# One CSV per suite (mirrors the structure of the previous benchmark):
+#   results/data_serial.csv    -- serial_std, serial_opt, serial_cache
+#   results/data_threads.csv   -- threads(p=2,4,6,8)
+#   results/data_processes.csv -- processes(p=2,4,6,8), n <= PROC_MAX_N
 #
-# Suite 3 - parallel : serial_std  vs  threads(2,4,6,8,12)
-#                                  vs  processes(2,4,6,8,12)
-#           Compares shared-memory threading against fork+mmap processes.
+# CSV columns (all suites):
+#   suite, impl, parallelism, grid_size, repetition, wall_time_ms, iters_done
+#
+# Grid sizes:
+#   serial / threads  : 100 200 500 1000 2000
+#   processes         : 100 200 500  (fork-per-iteration overhead cap)
+#
+# Parallel counts (same set for threads and processes — required correlation):
+#   p = 2 4 6 8 12
 #
 # Usage:
-#   sudo ./benchmark.sh [compiler|cache|parallel|all]   (default: all)
-#
-# Output (per suite):
-#   results/data_<suite>.csv
-#   results/summary_<suite>.txt
-#
-# Binaries (built by make):
-#   ./serial_std    <n> <max_iters>
-#   ./serial_opt    <n> <max_iters>
-#   ./serial_cache  <n> <max_iters>
-#   ./threads       <n> <max_iters> <n_threads>
-#   ./processes     <n> <max_iters> <n_procs>
-#
-# Each binary prints a single float (wall time in ms) to stdout.
-# Human-readable info goes to stderr.
+#   sudo ./benchmark.sh [all|serial|threads|procs|summary]
 # =============================================================================
 
 set -euo pipefail
 export LC_NUMERIC=C
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-
 RESULTS_DIR="results"
-GRID_SIZES=(100000 300000 500000 700000 900000 1000000 3000000)
-MAX_ITERS=5000 #TODO: increase to 10000 or more for more stable measurements (but beware of long runtimes on large grids)
-REPETITIONS=10
-PARALLEL_COUNTS=(2 4 6 8 12)
 
-CSV_HEADER="suite,impl,parallelism,grid_size,repetition,wall_time_ms"
+GRID_SIZES=(100 200 500 1000 2000)
+PROC_MAX_N=2000
+PARALLEL_COUNTS=(2 4 6 8 12)
+MAX_ITERS=20000000
+REPETITIONS=10 
+
+CSV_SERIAL="${RESULTS_DIR}/data_serial.csv"
+CSV_THREADS="${RESULTS_DIR}/data_threads.csv"
+CSV_PROCS="${RESULTS_DIR}/data_processes.csv"
+CSV_HEADER="suite,impl,parallelism,grid_size,repetition,wall_time_ms,iters_done,max_error"
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-BOLD="\033[1m"
-GREEN="\033[0;32m"
-RED="\033[0;31m"
-CYAN="\033[0;36m"
-RESET="\033[0m"
+BOLD="\033[1m"; GREEN="\033[0;32m"; RED="\033[0;31m"
+CYAN="\033[0;36m"; RESET="\033[0m"
 
 log_info()    { echo -e "  ${CYAN}>${RESET} $*"; }
 log_ok()      { echo -e "  ${GREEN}[ok]${RESET} $*"; }
@@ -65,10 +60,8 @@ _DM_UNIT=""
 _detect_display_manager() {
     local candidates=(sddm gdm gdm3 lightdm ly greetd)
     for dm in "${candidates[@]}"; do
-        if systemctl is-active --quiet "${dm}.service" 2>/dev/null; then
-            echo "${dm}.service"
-            return
-        fi
+        systemctl is-active --quiet "${dm}.service" 2>/dev/null \
+            && echo "${dm}.service" && return
     done
     echo ""
 }
@@ -85,118 +78,79 @@ optimize_system() {
     _DM_UNIT="$(_detect_display_manager)"
     if [[ -n "${_DM_UNIT}" ]]; then
         log_info "Stopping display manager: ${_DM_UNIT}"
-        if systemctl stop "${_DM_UNIT}" 2>/dev/null; then
-            log_ok "Display manager stopped"
-        else
-            log_error "Failed to stop ${_DM_UNIT}"
-        fi
+        systemctl stop "${_DM_UNIT}" 2>/dev/null \
+            && log_ok "Stopped" || log_error "Failed to stop ${_DM_UNIT}"
     else
         log_info "No active display manager detected"
     fi
 
-    log_info "Isolating multi-user.target (dropping GUI)"
-    if systemctl isolate multi-user.target 2>/dev/null; then
-        log_ok "Switched to multi-user.target"
-    else
-        log_error "Failed to isolate multi-user.target"
-    fi
+    log_info "Isolating multi-user.target"
+    systemctl isolate multi-user.target 2>/dev/null \
+        && log_ok "OK" || log_error "Failed"
 
     log_info "Setting CPU governor: performance"
     local gov_ok=0
     for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         [[ -f "${f}" ]] && echo performance > "${f}" && gov_ok=1
     done
-    if (( gov_ok )); then
-        log_ok "CPU governor set to performance"
-    else
-        log_error "Could not set CPU governor (path not found)"
-    fi
+    (( gov_ok )) && log_ok "Done" || log_error "Could not set governor"
 
     if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
-        log_info "Disabling AMD CPU boost"
-        if echo 0 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null; then
-            log_ok "AMD boost disabled"
-        else
-            log_error "Failed to disable AMD boost"
-        fi
+        echo 0 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null \
+            && log_ok "AMD boost disabled" || log_error "Failed"
     elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-        log_info "Disabling Intel turbo boost"
-        if echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null; then
-            log_ok "Intel turbo disabled"
-        else
-            log_error "Failed to disable Intel turbo"
-        fi
+        echo 1 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null \
+            && log_ok "Intel turbo disabled" || log_error "Failed"
     else
         log_info "No boost control path found — skipping"
     fi
 
-    log_ok "System ready for benchmarking"
+    log_ok "System ready"
 }
 
 restore_system() {
-    if [[ "${EUID}" -ne 0 ]]; then
-        return
-    fi
-
+    [[ "${EUID}" -ne 0 ]] && return
     log_section "Restoring system"
 
     local gov_ok=0
     for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         [[ -f "${f}" ]] && echo powersave > "${f}" && gov_ok=1
     done
-    if (( gov_ok )); then
-        log_ok "CPU governor restored to powersave"
-    fi
+    (( gov_ok )) && log_ok "CPU governor restored to powersave"
 
     if [[ -f /sys/devices/system/cpu/cpufreq/boost ]]; then
-        log_info "Re-enabling AMD CPU boost"
         echo 1 > /sys/devices/system/cpu/cpufreq/boost 2>/dev/null \
-            && log_ok "AMD boost re-enabled" \
-            || log_error "Failed to re-enable AMD boost"
+            && log_ok "AMD boost re-enabled" || log_error "Failed"
     elif [[ -f /sys/devices/system/cpu/intel_pstate/no_turbo ]]; then
-        log_info "Re-enabling Intel turbo boost"
         echo 0 > /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null \
-            && log_ok "Intel turbo re-enabled" \
-            || log_error "Failed to re-enable Intel turbo"
+            && log_ok "Intel turbo re-enabled" || log_error "Failed"
     fi
 
-    log_info "Restoring graphical.target"
-    if systemctl isolate graphical.target 2>/dev/null; then
-        log_ok "Switched back to graphical.target"
-    else
-        log_error "Failed to restore graphical.target"
-    fi
-
-    if [[ -n "${_DM_UNIT}" ]]; then
-        log_info "Starting display manager: ${_DM_UNIT}"
-        if systemctl start "${_DM_UNIT}" 2>/dev/null; then
-            log_ok "Display manager started"
-        else
-            log_error "Failed to start ${_DM_UNIT}"
-        fi
-    fi
-
+    systemctl isolate graphical.target 2>/dev/null \
+        && log_ok "Switched back to graphical.target" || log_error "Failed"
+    git add . && \
+    git commit -m "Upload results" && \
+    git push
+    [[ -n "${_DM_UNIT}" ]] && {
+        systemctl start "${_DM_UNIT}" 2>/dev/null \
+            && log_ok "Display manager started" || log_error "Failed"
+    }
     log_ok "System restored"
 }
 
 # ---------------------------------------------------------------------------
-# Pre-flight: compile if any binary is missing
+# Pre-flight
 # ---------------------------------------------------------------------------
 check_and_compile() {
     local missing=0
     for bin in serial_std serial_opt serial_cache threads processes; do
-        if [[ ! -x "${SCRIPT_DIR}/bin/${bin}" ]]; then
-            log_info "Binary not found: ${bin}"
-            missing=1
-        fi
+        [[ ! -x "${SCRIPT_DIR}/bin/${bin}" ]] \
+            && log_info "Binary missing: ${bin}" && missing=1
     done
-
-    if [[ "${missing}" -eq 1 ]]; then
-        log_section "Compiling binaries"
-        if [[ ! -f "${SCRIPT_DIR}/Makefile" ]]; then
-            log_error "Makefile not found in ${SCRIPT_DIR}. Run 'make' manually."
-            exit 1
-        fi
+    if (( missing )); then
+        log_section "Compiling"
+        [[ ! -f "${SCRIPT_DIR}/Makefile" ]] \
+            && log_error "Makefile not found" && exit 1
         make -C "${SCRIPT_DIR}" 2>&1 | sed 's/^/  /'
         log_ok "Compilation complete"
     else
@@ -208,10 +162,10 @@ check_and_compile() {
 # CSV helpers
 # ---------------------------------------------------------------------------
 setup_csv() {
-    local csv="$1" header="$2"
+    local csv="$1"
     mkdir -p "${RESULTS_DIR}"
     if [[ ! -f "${csv}" ]]; then
-        echo "${header}" > "${csv}"
+        echo "${CSV_HEADER}" > "${csv}"
         log_info "Created: ${csv}"
     else
         log_info "Appending to existing: ${csv}"
@@ -219,26 +173,28 @@ setup_csv() {
 }
 
 row_exists() {
-    local csv="$1" suite="$2" impl="$3" par="$4" size="$5" rep="$6"
-    awk -F',' -v su="$suite" -v im="$impl" -v pa="$par" \
-              -v si="$size"  -v re="$rep" \
-        'NR>1 && $1==su && $2==im && $3==pa && $4==si && $5==re { found=1 }
+    local csv="$1" impl="$2" par="$3" size="$4" rep="$5"
+    awk -F',' -v im="$impl" -v pa="$par" -v si="$size" -v re="$rep" \
+        'NR>1 && $2==im && $3==pa && $4==si && $5==re { found=1 }
          END { print found+0 }' "${csv}" 2>/dev/null
 }
 
 write_row() {
-    local csv="$1" suite="$2" impl="$3" par="$4" size="$5" rep="$6" ms="$7"
-    printf '%s,%s,%s,%s,%s,%s\n' \
-        "${suite}" "${impl}" "${par}" "${size}" "${rep}" "${ms}" >> "${csv}"
+    local csv="$1" suite="$2"
+    shift 2
+    # remaining args: impl parallelism grid_size repetition wall_time_ms iters_done
+    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "${suite}" "$@" >> "${csv}"
     sync
 }
 
 # ---------------------------------------------------------------------------
-# Single run
+# Single run — stdout: "wall_time_ms iters_done"
+# All binaries emit "iters=N" in their stderr diagnostic line.
 # ---------------------------------------------------------------------------
 run_once() {
     local bin="$1" size="$2" par="$3"
-    local ms errfile exit_code=0
+    local ms iters stderr_out exit_code=0
+    local errfile
     errfile=$(mktemp)
 
     if [[ "${par}" -eq 0 ]]; then
@@ -247,267 +203,362 @@ run_once() {
         ms=$("${bin}" "${size}" "${MAX_ITERS}" "${par}" 2>"${errfile}") || exit_code=$?
     fi
 
-    [[ -s "${errfile}" ]] && cat "${errfile}" >&2
-    rm -f "${errfile}"
+    stderr_out=$(cat "${errfile}"); rm -f "${errfile}"
 
     if [[ -z "${ms}" || "${exit_code}" -ne 0 ]]; then
-        log_error "Binary failed (exit=${exit_code}): ${bin} ${size} ${MAX_ITERS} ${par}"
-        echo "0.000"
-    else
-        echo "${ms}"
+        log_error "FAILED: ${bin} n=${size} p=${par} (exit=${exit_code})"
+        echo "0.000 0"; return
     fi
+
+    iters=$(echo "${stderr_out}" | grep -oP 'iters=\K[0-9]+'   | head -1 || echo "0")
+    error=$(echo "${stderr_out}" | grep -oP 'error=\K[0-9.e+-]+' | head -1 || echo "0")
+    echo "${ms} ${iters} ${error}"
 }
 
 # ---------------------------------------------------------------------------
-# Generic measurement loop
-# entries format: "impl|binary_path|parallelism"  (parallelism=0 -> serial)
+# Measure one (impl, parallelism) across applicable grid sizes
 # ---------------------------------------------------------------------------
-measure_entries() {
-    local suite="$1"
-    local csv="${RESULTS_DIR}/data_${suite}.csv"
-    shift
-    local entries=("$@")
+measure_impl() {
+    local csv="$1" suite="$2" impl="$3" bin="$4" par="$5" max_n="$6"
 
-    setup_csv "${csv}" "${CSV_HEADER}"
+    local label="${impl}"
+    [[ "${par}" -gt 0 ]] && label="${impl}(p=${par})"
+    log_section "Measuring: ${label}  [max_n=${max_n}]"
 
-    for entry in "${entries[@]}"; do
-        local impl bin par
-        impl=$(echo "${entry}" | cut -d'|' -f1)
-        bin=$(echo  "${entry}" | cut -d'|' -f2)
-        par=$(echo  "${entry}" | cut -d'|' -f3)
+    for rep in $(seq 1 "${REPETITIONS}"); do
+        for size in "${GRID_SIZES[@]}"; do
+            [[ "${size}" -gt "${max_n}" ]] && continue
 
-        local label="${impl}"
-        [[ "${par}" -gt 0 ]] && label="${impl}(${par})"
-        log_section "Measuring: ${label}"
+            if [[ "$(row_exists "${csv}" "${impl}" "${par}" "${size}" "${rep}")" -gt 0 ]]; then
+                log_info "[skip] ${label} n=${size} rep=${rep}"
+                continue
+            fi
 
-        for rep in $(seq 1 "${REPETITIONS}"); do
-            for size in "${GRID_SIZES[@]}"; do
-                if [[ "$(row_exists "${csv}" "${suite}" "${impl}" \
-                        "${par}" "${size}" "${rep}")" -gt 0 ]]; then
-                    log_info "[skip] ${label} n=${size} rep=${rep}"
-                    continue
-                fi
+            printf "    rep=%-2s  n=%-6s  " "${rep}" "${size}"
+            local result ms iters error
+            result=$(run_once "${bin}" "${size}" "${par}")
+            ms=$(echo    "${result}" | cut -d' ' -f1)
+            iters=$(echo "${result}" | cut -d' ' -f2)
+            error=$(echo "${result}" | cut -d' ' -f3)
+            printf "%-14s ms  iters=%-12s error=%s\n" "${ms}" "${iters}" "${error}"
+            [[ "${iters}" -ge "${MAX_ITERS}" ]] && echo "    [DID NOT CONVERGE]"
 
-                printf "    rep=%-2s  n=%-6s  " "${rep}" "${size}"
-                local ms
-                ms=$(run_once "${bin}" "${size}" "${par}")
-                printf "%s ms\n" "${ms}"
-
-                write_row "${csv}" "${suite}" "${impl}" \
-                          "${par}" "${size}" "${rep}" "${ms}"
-            done
+            write_row "${csv}" "${suite}" \
+                      "${impl}" "${par}" "${size}" "${rep}" "${ms}" "${iters}" "${error}"
         done
     done
 }
 
 # ---------------------------------------------------------------------------
-# Summary table with speedup relative to serial_std (always from data_serial.csv)
-# ---------------------------------------------------------------------------
-print_summary() {
-    local suite="$1"
-    local csv="${RESULTS_DIR}/data_${suite}.csv"
-    local ref_csv="${RESULTS_DIR}/data_serial.csv"
-    local summary="${RESULTS_DIR}/summary_${suite}.txt"
-    local tmpavg="${RESULTS_DIR}/.avgs_${suite}.tmp"
-    local tmpref="${RESULTS_DIR}/.avgs_ref.tmp"
-
-    # Average wall times for every (impl, parallelism, grid_size) in this suite
-    awk -F',' '
-    NR==1 { next }
-    {
-        key = $2 SUBSEP $3 SUBSEP $4
-        sum[key] += $6; cnt[key]++
-    }
-    END {
-        for (k in sum) {
-            split(k, a, SUBSEP)
-            printf "%s|%s|%s|%.3f\n", a[1], a[2], a[3], sum[k]/cnt[k]
-        }
-    }' "${csv}" | sort -t'|' -k1,1 -k2,2n -k3,3n > "${tmpavg}"
-
-    # Reference averages always come from the serial suite CSV
-    declare -A REF_AVG
-    if [[ -f "${ref_csv}" ]]; then
-        awk -F',' '
-        NR==1 { next }
-        $2=="serial_std" && $3=="0" {
-            key = $4
-            sum[key] += $6; cnt[key]++
-        }
-        END {
-            for (k in sum) printf "%s|%.3f\n", k, sum[k]/cnt[k]
-        }' "${ref_csv}" > "${tmpref}"
-
-        while IFS='|' read -r size avg; do
-            REF_AVG["${size}"]="${avg}"
-        done < "${tmpref}"
-        rm -f "${tmpref}"
-    else
-        log_error "Reference CSV not found: ${ref_csv}"
-        log_error "Run the 'serial' suite first to establish the baseline."
-    fi
-
-    {
-        echo ""
-        echo "Suite       : ${suite}"
-        echo "Date        : $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Host        : $(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo unknown)"
-        echo "GCC         : $(gcc --version | head -1)"
-        echo "Grid sizes  : ${GRID_SIZES[*]}"
-        echo "Max iters   : ${MAX_ITERS}"
-        echo "Repetitions : ${REPETITIONS}"
-        echo "Reference   : serial_std (from data_serial.csv)"
-        echo ""
-        echo "Average wall time (ms)"
-        printf '%0.s=' {1..90}; echo ""
-        printf "%-22s" "Impl (parallelism)"
-        for size in "${GRID_SIZES[@]}"; do printf "  %10s" "n=${size}"; done
-        printf "  %10s\n" "Avg Speedup"
-        printf "%-22s" "----------------------"
-        for size in "${GRID_SIZES[@]}"; do printf "  %10s" "----------"; done
-        printf "  %10s\n" "----------"
-
-        declare -A ROW_AVG ROW_ORDER
-        while IFS='|' read -r impl par size avg; do
-            local key="${impl}|${par}"
-            ROW_AVG["${key}:${size}"]="${avg}"
-            ROW_ORDER["${key}"]="${impl}|${par}"
-        done < "${tmpavg}"
-
-        IFS=$'\n' sorted_keys=($(printf '%s\n' "${!ROW_ORDER[@]}" \
-            | awk -F'|' '{
-                if      ($1=="serial_std")   o=0
-                else if ($1=="serial_opt")   o=1
-                else if ($1=="serial_cache") o=2
-                else if ($1=="threads")      o=3
-                else                         o=4
-                print o"|"$2"|"$0 }' \
-            | sort -t'|' -k1,1n -k2,2n \
-            | cut -d'|' -f3-))
-        unset IFS
-
-        for key in "${sorted_keys[@]}"; do
-            IFS='|' read -r impl par <<< "${key}"
-            local label="${impl}"
-            [[ "${par}" -gt 0 ]] && label="${impl}(${par})"
-            printf "%-22s" "${label}"
-
-            local sp_sum=0 sp_cnt=0
-            for size in "${GRID_SIZES[@]}"; do
-                local avg="${ROW_AVG[${key}:${size}]:-}"
-                if [[ -z "${avg}" ]]; then printf "  %10s" "N/A"; continue; fi
-                printf "  %10.1f" "${avg}"
-
-                local ref="${REF_AVG[${size}]:-}"
-                if [[ -n "${ref}" && "${avg}" != "0.000" ]]; then
-                    local sp
-                    sp=$(awk "BEGIN { printf \"%.4f\", ${ref}/${avg} }")
-                    sp_sum=$(awk "BEGIN { printf \"%.4f\", ${sp_sum}+${sp} }")
-                    sp_cnt=$(( sp_cnt + 1 ))
-                fi
-            done
-
-            if (( sp_cnt > 0 )); then
-                local avg_sp
-                avg_sp=$(awk "BEGIN { printf \"%.3f\", ${sp_sum}/${sp_cnt} }")
-                printf "  %10sx\n" "${avg_sp}"
-            else
-                printf "  %10s\n" "N/A"
-            fi
-        done
-
-        echo ""
-        echo "Speedup = T(serial_std) / T(row)  [>1 means faster than reference]"
-        printf '%0.s=' {1..90}; echo ""
-    } | tee "${summary}"
-
-    rm -f "${tmpavg}"
-    log_ok "Summary : ${summary}"
-    log_ok "Raw data: ${csv}"
-}
-
-# ---------------------------------------------------------------------------
-# Suites
+# Suite runners
 # ---------------------------------------------------------------------------
 run_suite_serial() {
-    local entries=(
-        "serial_std|./bin/serial_std|0"
-    )
-    measure_entries "serial" "${entries[@]}"
-    print_summary   "serial"
+    local max_n="${GRID_SIZES[-1]}"
+    setup_csv "${CSV_SERIAL}"
+    measure_impl "${CSV_SERIAL}" "serial" "serial_std"   "./bin/serial_std"   0 "${max_n}"
+    measure_impl "${CSV_SERIAL}" "serial" "serial_opt"   "./bin/serial_opt"   0 "${max_n}"
+    measure_impl "${CSV_SERIAL}" "serial" "serial_cache" "./bin/serial_cache" 0 "${max_n}"
+    print_summary_serial
 }
 
-run_suite_compiler() {
-    local entries=(
-        "serial_opt|./bin/serial_opt|0"
-    )
-    measure_entries "compiler" "${entries[@]}"
-    print_summary   "compiler"
-}
-
-run_suite_cache() {
-    local entries=(
-        "serial_cache|./bin/serial_cache|0"
-    )
-    measure_entries "cache" "${entries[@]}"
-    print_summary   "cache"
-}
-
-run_suite_parallel() {
-    local entries=()
+run_suite_threads() {
+    local max_n="${GRID_SIZES[-1]}"
+    setup_csv "${CSV_THREADS}"
     for p in "${PARALLEL_COUNTS[@]}"; do
-        entries+=("threads|./bin/threads|${p}")
+        measure_impl "${CSV_THREADS}" "threads" "threads" "./bin/threads" "${p}" "${max_n}"
     done
+    print_summary_threads
+}
+
+run_suite_procs() {
+    local max_n="${GRID_SIZES[-1]}"
+    setup_csv "${CSV_PROCS}"
     for p in "${PARALLEL_COUNTS[@]}"; do
-        entries+=("processes|./bin/processes|${p}")
+        measure_impl "${CSV_PROCS}" "processes" "processes" "./bin/processes" "${p}" "${max_n}"
     done
-    measure_entries "parallel" "${entries[@]}"
-    print_summary   "parallel"
+    print_summary_procs
+}
+
+# ---------------------------------------------------------------------------
+# Summary helpers — Python for clean formatting
+# Reference T(serial_std, n) always read from CSV_SERIAL.
+# ---------------------------------------------------------------------------
+_load_ref_avgs() {
+    # Prints "size avg_ms" lines for serial_std from CSV_SERIAL
+    python3 - "${CSV_SERIAL}" << 'PYEOF'
+import sys, csv
+from collections import defaultdict
+rows = defaultdict(list)
+with open(sys.argv[1]) as f:
+    for r in csv.DictReader(f):
+        if r['impl'] == 'serial_std' and int(r['parallelism']) == 0:
+            rows[int(r['grid_size'])].append(float(r['wall_time_ms']))
+for s, vals in sorted(rows.items()):
+    print(s, sum(vals)/len(vals))
+PYEOF
+}
+
+print_summary_serial() {
+    local summary="${RESULTS_DIR}/summary_serial.txt"
+    log_section "Serial summary"
+    python3 - "${CSV_SERIAL}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
+import sys, csv, math
+from collections import defaultdict
+
+path  = sys.argv[1]
+sizes = [int(x) for x in sys.argv[2:]]
+
+rows = defaultdict(list)
+with open(path) as f:
+    for r in csv.DictReader(f):
+        key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+        rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+
+def avg(v): return sum(v)/len(v) if v else None
+def std(v):
+    m = avg(v)
+    return math.sqrt(sum((x-m)**2 for x in v)/len(v)) if v and m else 0.0
+
+avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]), std([d[0] for d in v]))
+        for k, v in rows.items()}
+
+ref = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+
+W, C = 22, 16
+impls = [('serial_std',0), ('serial_opt',0), ('serial_cache',0)]
+
+print()
+print("=" * (W + C * len(sizes) + 10))
+print("  Serial suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(impl)")
+print()
+
+# Iterations
+print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
+print(f"  {'-'*(W+C*len(sizes))}")
+for impl, par in impls:
+    row = f"  {impl:<{W}}"
+    for s in sizes:
+        v = avgs.get((impl, par, s))
+        row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
+    print(row)
+
+print()
+# Time + speedup
+print(f"  {'Impl':<{W}}" +
+      "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes))
+print(f"  {'-'*(W+(C+8)*len(sizes))}")
+for impl, par in impls:
+    row = f"  {impl:<{W}}"
+    for s in sizes:
+        v = avgs.get((impl, par, s))
+        r = ref.get(s)
+        if v and v[0]:
+            row += f"{v[0]:>{C},.1f}"
+            sp = r/v[0] if r and v[0] > 0 else None
+            row += f"{sp:>8.3f}x" if sp else f"{'1.000x':>8}"
+        else:
+            row += f"{'—':>{C}}{'—':>8}"
+    print(row)
+print("=" * (W + C * len(sizes) + 10))
+PYEOF
+    log_ok "Summary: ${summary}"
+    log_ok "Raw data: ${CSV_SERIAL}"
+}
+
+print_summary_threads() {
+    local summary="${RESULTS_DIR}/summary_threads.txt"
+    log_section "Threads summary"
+    python3 - "${CSV_THREADS}" "${CSV_SERIAL}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
+import sys, csv, math
+from collections import defaultdict
+
+t_path  = sys.argv[1]
+s_path  = sys.argv[2]
+sizes   = [int(x) for x in sys.argv[3:]]
+
+def load(path):
+    rows = defaultdict(list)
+    with open(path) as f:
+        for r in csv.DictReader(f):
+            key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+            rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+    return rows
+
+def avg(v): return sum(v)/len(v) if v else None
+
+t_rows = load(t_path)
+s_rows = load(s_path)
+all_rows = {**s_rows, **t_rows}
+
+avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
+        for k, v in all_rows.items()}
+
+ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+pars = sorted({k[1] for k in t_rows if k[1] > 0})
+
+W, C = 22, 16
+print()
+print("=" * (W + C * len(sizes) + 10))
+print("  Threads suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(threads,p)")
+print()
+
+# Iterations (first row = serial_std for reference)
+print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
+print(f"  {'-'*(W+C*len(sizes))}")
+for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
+    lbl = impl if par == 0 else f"threads(p={par})"
+    row = f"  {lbl:<{W}}"
+    for s in sizes:
+        v = avgs.get((impl, par, s))
+        row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
+    print(row)
+
+print()
+# Time + speedup
+print(f"  {'Impl':<{W}}" +
+      "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes) +
+      f"{'Avg sp':>10}")
+print(f"  {'-'*(W+(C+8)*len(sizes)+10)}")
+for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
+    lbl = impl if par == 0 else f"threads(p={par})"
+    row = f"  {lbl:<{W}}"
+    sp_list = []
+    for s in sizes:
+        v = avgs.get((impl, par, s))
+        r = ref.get(s)
+        if v and v[0]:
+            row += f"{v[0]:>{C},.1f}"
+            if r and v[0] > 0 and impl != 'serial_std':
+                sp = r/v[0]; sp_list.append(sp)
+                row += f"{sp:>8.3f}x"
+            else:
+                row += f"{'1.000x' if impl=='serial_std' else '—':>8}"
+        else:
+            row += f"{'—':>{C}}{'—':>8}"
+    avg_sp = sum(sp_list)/len(sp_list) if sp_list else None
+    row += f"{avg_sp:>10.3f}x" if avg_sp else f"{'—':>10}"
+    print(row)
+print("=" * (W + C * len(sizes) + 10))
+PYEOF
+    log_ok "Summary: ${summary}"
+    log_ok "Raw data: ${CSV_THREADS}"
+}
+
+print_summary_procs() {
+    local summary="${RESULTS_DIR}/summary_processes.txt"
+    log_section "Processes summary"
+    python3 - "${CSV_PROCS}" "${CSV_THREADS}" "${CSV_SERIAL}" \
+              "${PROC_MAX_N}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
+import sys, csv, math
+from collections import defaultdict
+
+p_path   = sys.argv[1]
+t_path   = sys.argv[2]
+s_path   = sys.argv[3]
+sizes = [int(x) for x in sys.argv[5:]]
+
+def load(path):
+    rows = defaultdict(list)
+    with open(path) as f:
+        for r in csv.DictReader(f):
+            key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+            rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+    return rows
+
+def avg(v): return sum(v)/len(v) if v else None
+
+all_rows = {**load(s_path), **load(t_path), **load(p_path)}
+avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
+        for k, v in all_rows.items()}
+
+ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+pars = sorted({k[1] for k in load(p_path) if k[1] > 0})
+
+W, C = 22, 18
+print()
+print("=" * (W + C * len(sizes) * 2 + 10))
+print(f"  Processes suite  |  n ≤ {max(sizes)}  |  fork-per-iteration overhead cap")
+print(f"  Correlation: threads(p) vs processes(p) at same p and n")
+print(f"  Speedup = T(serial_std, n) / T(impl, n, p)")
+print()
+
+# Correlation table: one block per n
+for s in sizes:
+    r = ref.get(s)
+    print(f"  n = {s}  |  serial_std = {r:,.1f} ms" if r else f"  n = {s}")
+    print(f"  {'p':<6} {'threads ms':>{C}} {'sp':>8}  {'processes ms':>{C}} {'sp':>8}")
+    print(f"  {'-'*(6+C+8+2+C+8+4)}")
+    for p in pars:
+        tv = avgs.get(('threads',   p, s))
+        pv = avgs.get(('processes', p, s))
+        t_ms = f"{tv[0]:>{C},.1f}" if tv and tv[0] else f"{'—':>{C}}"
+        t_sp = f"{r/tv[0]:>8.3f}x" if tv and tv[0] and r else f"{'—':>8}"
+        p_ms = f"{pv[0]:>{C},.1f}" if pv and pv[0] else f"{'—':>{C}}"
+        p_sp = f"{r/pv[0]:>8.3f}x" if pv and pv[0] and r else f"{'—':>8}"
+        print(f"  {p:<6} {t_ms} {t_sp}  {p_ms} {p_sp}")
+    print()
+
+print("=" * (W + C * len(sizes) * 2 + 10))
+PYEOF
+    log_ok "Summary: ${summary}"
+    log_ok "Raw data: ${CSV_PROCS}"
 }
 
 # ---------------------------------------------------------------------------
 print_banner() {
     echo -e "${BOLD}"
-    echo "================================================================"
-    echo "   Poisson 1D Jacobi -- Benchmark"
-    echo "   Grid sizes   : ${GRID_SIZES[*]}"
-    echo "   Max iters    : ${MAX_ITERS}"
-    echo "   Repetitions  : ${REPETITIONS}"
-    echo "   Parallelism  : ${PARALLEL_COUNTS[*]}"
-    echo "   Date         : $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "================================================================"
+    echo "================================================================="
+    echo "   Poisson 1D Jacobi -- Convergence-based speedup study"
+    echo "   Tolerance      : 1e-6 (RMS residual)"
+    echo "   Grid sizes     : ${GRID_SIZES[*]}"
+    echo "   Parallel p     : ${PARALLEL_COUNTS[*]}  (same for threads & processes)"
+    echo "   Max iters cap  : ${MAX_ITERS}"
+    echo "   Repetitions    : ${REPETITIONS}"
+    echo "   Date           : $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "================================================================="
     echo -e "${RESET}"
 }
 
 # ---------------------------------------------------------------------------
 main() {
-    local suite="${1:-all}"
+    local mode="${1:-all}"
     cd "${SCRIPT_DIR}"
-    mkdir -p "${RESULTS_DIR}"
 
     check_and_compile
 
     trap restore_system EXIT
     optimize_system
-
     print_banner
 
-    case "${suite}" in
-        serial)   run_suite_serial   ;;
-        compiler) run_suite_compiler ;;
-        cache)    run_suite_cache    ;;
-        parallel) run_suite_parallel ;;
+    case "${mode}" in
+        serial)
+            run_suite_serial ;;
+        threads)
+            if [[ ! -f "${CSV_SERIAL}" ]]; then
+                log_error "data_serial.csv not found — run 'serial' suite first."
+                exit 1
+            fi
+            run_suite_threads ;;
+        procs)
+            if [[ ! -f "${CSV_SERIAL}" || ! -f "${CSV_THREADS}" ]]; then
+                log_error "data_serial.csv or data_threads.csv not found."
+                log_error "Run 'serial' and 'threads' suites first."
+                exit 1
+            fi
+            run_suite_procs ;;
+        summary)
+            [[ -f "${CSV_SERIAL}" ]]  && print_summary_serial
+            [[ -f "${CSV_THREADS}" ]] && print_summary_threads
+            [[ -f "${CSV_PROCS}" ]]   && print_summary_procs
+            ;;
         all)
             run_suite_serial
-            run_suite_compiler
-            run_suite_cache
-            run_suite_parallel
-            ;;
+            run_suite_threads
+            run_suite_procs ;;
         *)
-            log_error "Unknown suite: '${suite}'"
-            log_error "Options: serial | compiler | cache | parallel | all"
-            exit 1
-            ;;
+            log_error "Unknown mode: '${mode}'"
+            log_error "Options: all | serial | threads | procs | summary"
+            exit 1 ;;
     esac
 }
 
