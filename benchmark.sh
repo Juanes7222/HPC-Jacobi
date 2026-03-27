@@ -41,9 +41,7 @@ CSV_THREADS="${RESULTS_DIR}/data_threads.csv"
 CSV_PROCS="${RESULTS_DIR}/data_processes.csv"
 CSV_HEADER="suite,impl,parallelism,grid_size,repetition,wall_time_ms,iters_done,max_error"
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
+
 BOLD="\033[1m"; GREEN="\033[0;32m"; RED="\033[0;31m"
 CYAN="\033[0;36m"; RESET="\033[0m"
 
@@ -52,9 +50,6 @@ log_ok()      { echo -e "  ${GREEN}[ok]${RESET} $*"; }
 log_error()   { echo -e "  ${RED}[error]${RESET} $*" >&2; }
 log_section() { echo -e "\n${BOLD}-- $* ${RESET}"; }
 
-# ---------------------------------------------------------------------------
-# System optimization / restore
-# ---------------------------------------------------------------------------
 _DM_UNIT=""
 
 _detect_display_manager() {
@@ -138,9 +133,6 @@ restore_system() {
     log_ok "System restored"
 }
 
-# ---------------------------------------------------------------------------
-# Pre-flight
-# ---------------------------------------------------------------------------
 check_and_compile() {
     local missing=0
     for bin in serial_std serial_opt serial_cache threads processes; do
@@ -158,9 +150,6 @@ check_and_compile() {
     fi
 }
 
-# ---------------------------------------------------------------------------
-# CSV helpers
-# ---------------------------------------------------------------------------
 setup_csv() {
     local csv="$1"
     mkdir -p "${RESULTS_DIR}"
@@ -182,15 +171,11 @@ row_exists() {
 write_row() {
     local csv="$1" suite="$2"
     shift 2
-    # remaining args: impl parallelism grid_size repetition wall_time_ms iters_done
+    # remaining args: impl parallelism grid_size repetition wall_time_ms iters_done max_error
     printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "${suite}" "$@" >> "${csv}"
     sync
 }
 
-# ---------------------------------------------------------------------------
-# Single run — stdout: "wall_time_ms iters_done"
-# All binaries emit "iters=N" in their stderr diagnostic line.
-# ---------------------------------------------------------------------------
 run_once() {
     local bin="$1" size="$2" par="$3"
     local ms iters stderr_out exit_code=0
@@ -215,9 +200,6 @@ run_once() {
     echo "${ms} ${iters} ${error}"
 }
 
-# ---------------------------------------------------------------------------
-# Measure one (impl, parallelism) across applicable grid sizes
-# ---------------------------------------------------------------------------
 measure_impl() {
     local csv="$1" suite="$2" impl="$3" bin="$4" par="$5" max_n="$6"
 
@@ -249,9 +231,6 @@ measure_impl() {
     done
 }
 
-# ---------------------------------------------------------------------------
-# Suite runners
-# ---------------------------------------------------------------------------
 run_suite_serial() {
     local max_n="${GRID_SIZES[-1]}"
     setup_csv "${CSV_SERIAL}"
@@ -279,22 +258,17 @@ run_suite_procs() {
     print_summary_procs
 }
 
-# ---------------------------------------------------------------------------
-# Summary helpers — Python for clean formatting
-# Reference T(serial_std, n) always read from CSV_SERIAL.
-# ---------------------------------------------------------------------------
 _load_ref_avgs() {
-    # Prints "size avg_ms" lines for serial_std from CSV_SERIAL
     python3 - "${CSV_SERIAL}" << 'PYEOF'
-import sys, csv
-from collections import defaultdict
-rows = defaultdict(list)
-with open(sys.argv[1]) as f:
-    for r in csv.DictReader(f):
-        if r['impl'] == 'serial_std' and int(r['parallelism']) == 0:
-            rows[int(r['grid_size'])].append(float(r['wall_time_ms']))
-for s, vals in sorted(rows.items()):
-    print(s, sum(vals)/len(vals))
+        import sys, csv
+        from collections import defaultdict
+        rows = defaultdict(list)
+        with open(sys.argv[1]) as f:
+            for r in csv.DictReader(f):
+                if r['impl'] == 'serial_std' and int(r['parallelism']) == 0:
+                    rows[int(r['grid_size'])].append(float(r['wall_time_ms']))
+        for s, vals in sorted(rows.items()):
+        print(s, sum(vals)/len(vals))   
 PYEOF
 }
 
@@ -302,64 +276,64 @@ print_summary_serial() {
     local summary="${RESULTS_DIR}/summary_serial.txt"
     log_section "Serial summary"
     python3 - "${CSV_SERIAL}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
-import sys, csv, math
-from collections import defaultdict
+        import sys, csv, math
+        from collections import defaultdict
 
-path  = sys.argv[1]
-sizes = [int(x) for x in sys.argv[2:]]
+        path  = sys.argv[1]
+        sizes = [int(x) for x in sys.argv[2:]]
 
-rows = defaultdict(list)
-with open(path) as f:
-    for r in csv.DictReader(f):
-        key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
-        rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+        rows = defaultdict(list)
+        with open(path) as f:
+            for r in csv.DictReader(f):
+                key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+                rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
 
-def avg(v): return sum(v)/len(v) if v else None
-def std(v):
-    m = avg(v)
-    return math.sqrt(sum((x-m)**2 for x in v)/len(v)) if v and m else 0.0
+        def avg(v): return sum(v)/len(v) if v else None
+        def std(v):
+            m = avg(v)
+            return math.sqrt(sum((x-m)**2 for x in v)/len(v)) if v and m else 0.0
 
-avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]), std([d[0] for d in v]))
-        for k, v in rows.items()}
+        avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]), std([d[0] for d in v]))
+                for k, v in rows.items()}
 
-ref = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+        ref = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
 
-W, C = 22, 16
-impls = [('serial_std',0), ('serial_opt',0), ('serial_cache',0)]
+        W, C = 22, 16
+        impls = [('serial_std',0), ('serial_opt',0), ('serial_cache',0)]
 
-print()
-print("=" * (W + C * len(sizes) + 10))
-print("  Serial suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(impl)")
-print()
+        print()
+        print("=" * (W + C * len(sizes) + 10))
+        print("  Serial suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(impl)")
+        print()
 
-# Iterations
-print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
-print(f"  {'-'*(W+C*len(sizes))}")
-for impl, par in impls:
-    row = f"  {impl:<{W}}"
-    for s in sizes:
-        v = avgs.get((impl, par, s))
-        row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
-    print(row)
+        # Iterations
+        print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
+        print(f"  {'-'*(W+C*len(sizes))}")
+        for impl, par in impls:
+            row = f"  {impl:<{W}}"
+            for s in sizes:
+                v = avgs.get((impl, par, s))
+                row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
+            print(row)
 
-print()
-# Time + speedup
-print(f"  {'Impl':<{W}}" +
-      "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes))
-print(f"  {'-'*(W+(C+8)*len(sizes))}")
-for impl, par in impls:
-    row = f"  {impl:<{W}}"
-    for s in sizes:
-        v = avgs.get((impl, par, s))
-        r = ref.get(s)
-        if v and v[0]:
-            row += f"{v[0]:>{C},.1f}"
-            sp = r/v[0] if r and v[0] > 0 else None
-            row += f"{sp:>8.3f}x" if sp else f"{'1.000x':>8}"
-        else:
-            row += f"{'—':>{C}}{'—':>8}"
-    print(row)
-print("=" * (W + C * len(sizes) + 10))
+        print()
+        # Time + speedup
+        print(f"  {'Impl':<{W}}" +
+            "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes))
+        print(f"  {'-'*(W+(C+8)*len(sizes))}")
+        for impl, par in impls:
+            row = f"  {impl:<{W}}"
+            for s in sizes:
+                v = avgs.get((impl, par, s))
+                r = ref.get(s)
+                if v and v[0]:
+                    row += f"{v[0]:>{C},.1f}"
+                    sp = r/v[0] if r and v[0] > 0 else None
+                    row += f"{sp:>8.3f}x" if sp else f"{'1.000x':>8}"
+                else:
+                    row += f"{'—':>{C}}{'—':>8}"
+            print(row)
+        print("=" * (W + C * len(sizes) + 10))
 PYEOF
     log_ok "Summary: ${summary}"
     log_ok "Raw data: ${CSV_SERIAL}"
@@ -369,76 +343,76 @@ print_summary_threads() {
     local summary="${RESULTS_DIR}/summary_threads.txt"
     log_section "Threads summary"
     python3 - "${CSV_THREADS}" "${CSV_SERIAL}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
-import sys, csv, math
-from collections import defaultdict
+        import sys, csv, math
+        from collections import defaultdict
 
-t_path  = sys.argv[1]
-s_path  = sys.argv[2]
-sizes   = [int(x) for x in sys.argv[3:]]
+        t_path  = sys.argv[1]
+        s_path  = sys.argv[2]
+        sizes   = [int(x) for x in sys.argv[3:]]
 
-def load(path):
-    rows = defaultdict(list)
-    with open(path) as f:
-        for r in csv.DictReader(f):
-            key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
-            rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
-    return rows
+        def load(path):
+            rows = defaultdict(list)
+            with open(path) as f:
+                for r in csv.DictReader(f):
+                    key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+                    rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+            return rows
 
-def avg(v): return sum(v)/len(v) if v else None
+        def avg(v): return sum(v)/len(v) if v else None
 
-t_rows = load(t_path)
-s_rows = load(s_path)
-all_rows = {**s_rows, **t_rows}
+        t_rows = load(t_path)
+        s_rows = load(s_path)
+        all_rows = {**s_rows, **t_rows}
 
-avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
-        for k, v in all_rows.items()}
+        avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
+                for k, v in all_rows.items()}
 
-ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
-pars = sorted({k[1] for k in t_rows if k[1] > 0})
+        ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+        pars = sorted({k[1] for k in t_rows if k[1] > 0})
 
-W, C = 22, 16
-print()
-print("=" * (W + C * len(sizes) + 10))
-print("  Threads suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(threads,p)")
-print()
+        W, C = 22, 16
+        print()
+        print("=" * (W + C * len(sizes) + 10))
+        print("  Threads suite  |  tolerance = 1e-6  |  speedup = T(serial_std)/T(threads,p)")
+        print()
 
-# Iterations (first row = serial_std for reference)
-print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
-print(f"  {'-'*(W+C*len(sizes))}")
-for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
-    lbl = impl if par == 0 else f"threads(p={par})"
-    row = f"  {lbl:<{W}}"
-    for s in sizes:
-        v = avgs.get((impl, par, s))
-        row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
-    print(row)
+        # Iterations (first row = serial_std for reference)
+        print(f"  {'Impl':<{W}}" + "".join(f"{'n='+str(s):>{C}}" for s in sizes))
+        print(f"  {'-'*(W+C*len(sizes))}")
+        for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
+            lbl = impl if par == 0 else f"threads(p={par})"
+            row = f"  {lbl:<{W}}"
+            for s in sizes:
+                v = avgs.get((impl, par, s))
+                row += f"{int(v[1]):>{C},}" if v and v[1] else f"{'—':>{C}}"
+            print(row)
 
-print()
-# Time + speedup
-print(f"  {'Impl':<{W}}" +
-      "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes) +
-      f"{'Avg sp':>10}")
-print(f"  {'-'*(W+(C+8)*len(sizes)+10)}")
-for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
-    lbl = impl if par == 0 else f"threads(p={par})"
-    row = f"  {lbl:<{W}}"
-    sp_list = []
-    for s in sizes:
-        v = avgs.get((impl, par, s))
-        r = ref.get(s)
-        if v and v[0]:
-            row += f"{v[0]:>{C},.1f}"
-            if r and v[0] > 0 and impl != 'serial_std':
-                sp = r/v[0]; sp_list.append(sp)
-                row += f"{sp:>8.3f}x"
-            else:
-                row += f"{'1.000x' if impl=='serial_std' else '—':>8}"
-        else:
-            row += f"{'—':>{C}}{'—':>8}"
-    avg_sp = sum(sp_list)/len(sp_list) if sp_list else None
-    row += f"{avg_sp:>10.3f}x" if avg_sp else f"{'—':>10}"
-    print(row)
-print("=" * (W + C * len(sizes) + 10))
+        print()
+        # Time + speedup
+        print(f"  {'Impl':<{W}}" +
+            "".join(f"{'n='+str(s)+' ms':>{C}}{'sp':>8}" for s in sizes) +
+            f"{'Avg sp':>10}")
+        print(f"  {'-'*(W+(C+8)*len(sizes)+10)}")
+        for impl, par in [('serial_std',0)] + [('threads',p) for p in pars]:
+            lbl = impl if par == 0 else f"threads(p={par})"
+            row = f"  {lbl:<{W}}"
+            sp_list = []
+            for s in sizes:
+                v = avgs.get((impl, par, s))
+                r = ref.get(s)
+                if v and v[0]:
+                    row += f"{v[0]:>{C},.1f}"
+                    if r and v[0] > 0 and impl != 'serial_std':
+                        sp = r/v[0]; sp_list.append(sp)
+                        row += f"{sp:>8.3f}x"
+                    else:
+                        row += f"{'1.000x' if impl=='serial_std' else '—':>8}"
+                else:
+                    row += f"{'—':>{C}}{'—':>8}"
+            avg_sp = sum(sp_list)/len(sp_list) if sp_list else None
+            row += f"{avg_sp:>10.3f}x" if avg_sp else f"{'—':>10}"
+            print(row)
+        print("=" * (W + C * len(sizes) + 10))
 PYEOF
     log_ok "Summary: ${summary}"
     log_ok "Raw data: ${CSV_THREADS}"
@@ -449,62 +423,61 @@ print_summary_procs() {
     log_section "Processes summary"
     python3 - "${CSV_PROCS}" "${CSV_THREADS}" "${CSV_SERIAL}" \
               "${PROC_MAX_N}" "${GRID_SIZES[@]}" << 'PYEOF' | tee "${summary}"
-import sys, csv, math
-from collections import defaultdict
+        import sys, csv, math
+        from collections import defaultdict
 
-p_path   = sys.argv[1]
-t_path   = sys.argv[2]
-s_path   = sys.argv[3]
-sizes = [int(x) for x in sys.argv[5:]]
+        p_path   = sys.argv[1]
+        t_path   = sys.argv[2]
+        s_path   = sys.argv[3]
+        sizes = [int(x) for x in sys.argv[5:]]
 
-def load(path):
-    rows = defaultdict(list)
-    with open(path) as f:
-        for r in csv.DictReader(f):
-            key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
-            rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
-    return rows
+        def load(path):
+            rows = defaultdict(list)
+            with open(path) as f:
+                for r in csv.DictReader(f):
+                    key = (r['impl'], int(r['parallelism']), int(r['grid_size']))
+                    rows[key].append((float(r['wall_time_ms']), int(r['iters_done'])))
+            return rows
 
-def avg(v): return sum(v)/len(v) if v else None
+        def avg(v): return sum(v)/len(v) if v else None
 
-all_rows = {**load(s_path), **load(t_path), **load(p_path)}
-avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
-        for k, v in all_rows.items()}
+        all_rows = {**load(s_path), **load(t_path), **load(p_path)}
+        avgs = {k: (avg([d[0] for d in v]), avg([d[1] for d in v]))
+                for k, v in all_rows.items()}
 
-ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
-pars = sorted({k[1] for k in load(p_path) if k[1] > 0})
+        ref  = {s: avgs.get(('serial_std', 0, s), (None,))[0] for s in sizes}
+        pars = sorted({k[1] for k in load(p_path) if k[1] > 0})
 
-W, C = 22, 18
-print()
-print("=" * (W + C * len(sizes) * 2 + 10))
-print(f"  Processes suite  |  n ≤ {max(sizes)}  |  fork-per-iteration overhead cap")
-print(f"  Correlation: threads(p) vs processes(p) at same p and n")
-print(f"  Speedup = T(serial_std, n) / T(impl, n, p)")
-print()
+        W, C = 22, 18
+        print()
+        print("=" * (W + C * len(sizes) * 2 + 10))
+        print(f"  Processes suite  |  n ≤ {max(sizes)}  |  fork-per-iteration overhead cap")
+        print(f"  Correlation: threads(p) vs processes(p) at same p and n")
+        print(f"  Speedup = T(serial_std, n) / T(impl, n, p)")
+        print()
 
-# Correlation table: one block per n
-for s in sizes:
-    r = ref.get(s)
-    print(f"  n = {s}  |  serial_std = {r:,.1f} ms" if r else f"  n = {s}")
-    print(f"  {'p':<6} {'threads ms':>{C}} {'sp':>8}  {'processes ms':>{C}} {'sp':>8}")
-    print(f"  {'-'*(6+C+8+2+C+8+4)}")
-    for p in pars:
-        tv = avgs.get(('threads',   p, s))
-        pv = avgs.get(('processes', p, s))
-        t_ms = f"{tv[0]:>{C},.1f}" if tv and tv[0] else f"{'—':>{C}}"
-        t_sp = f"{r/tv[0]:>8.3f}x" if tv and tv[0] and r else f"{'—':>8}"
-        p_ms = f"{pv[0]:>{C},.1f}" if pv and pv[0] else f"{'—':>{C}}"
-        p_sp = f"{r/pv[0]:>8.3f}x" if pv and pv[0] and r else f"{'—':>8}"
-        print(f"  {p:<6} {t_ms} {t_sp}  {p_ms} {p_sp}")
-    print()
+        # Correlation table: one block per n
+        for s in sizes:
+            r = ref.get(s)
+            print(f"  n = {s}  |  serial_std = {r:,.1f} ms" if r else f"  n = {s}")
+            print(f"  {'p':<6} {'threads ms':>{C}} {'sp':>8}  {'processes ms':>{C}} {'sp':>8}")
+            print(f"  {'-'*(6+C+8+2+C+8+4)}")
+            for p in pars:
+                tv = avgs.get(('threads',   p, s))
+                pv = avgs.get(('processes', p, s))
+                t_ms = f"{tv[0]:>{C},.1f}" if tv and tv[0] else f"{'—':>{C}}"
+                t_sp = f"{r/tv[0]:>8.3f}x" if tv and tv[0] and r else f"{'—':>8}"
+                p_ms = f"{pv[0]:>{C},.1f}" if pv and pv[0] else f"{'—':>{C}}"
+                p_sp = f"{r/pv[0]:>8.3f}x" if pv and pv[0] and r else f"{'—':>8}"
+                print(f"  {p:<6} {t_ms} {t_sp}  {p_ms} {p_sp}")
+            print()
 
-print("=" * (W + C * len(sizes) * 2 + 10))
+        print("=" * (W + C * len(sizes) * 2 + 10))
 PYEOF
     log_ok "Summary: ${summary}"
     log_ok "Raw data: ${CSV_PROCS}"
 }
 
-# ---------------------------------------------------------------------------
 print_banner() {
     echo -e "${BOLD}"
     echo "================================================================="
@@ -519,7 +492,6 @@ print_banner() {
     echo -e "${RESET}"
 }
 
-# ---------------------------------------------------------------------------
 main() {
     local mode="${1:-all}"
     cd "${SCRIPT_DIR}"
