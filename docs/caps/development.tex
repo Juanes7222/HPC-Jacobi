@@ -49,7 +49,7 @@ Las iteraciones se detienen cuando $\mathrm{RMS}(r) < 10^{-6}$ o al alcanzar el 
 
 Antes de entrar en cada variante se fijaron tres principios que guiaron toda la implementación:
 
-\begin{enumerate}[leftmargin=1.2cm]
+\begin{enumerate}
     \item \textbf{Misma lógica numérica para todas las variantes}: si el algoritmo cambia, la comparación deja de ser limpia.
     \item \textbf{Separación entre utilidades numéricas y motor de ejecución}: funciones compartidas en \texttt{poisson.c}/\texttt{poisson.h}; cada estrategia de ejecución en su propio archivo.
     \item \textbf{Costo de sincronización visible}: diseñar las versiones paralelas de forma que el precio de cada modelo (barreras, semáforos) sea identificable estructuralmente.
@@ -61,7 +61,7 @@ Esta organización hace que cada archivo del directorio \texttt{src} tenga una r
 
 Todas las implementaciones comparten la misma estructura de memoria de doble buffer:
 
-\begin{itemize}[leftmargin=1.5cm]
+\begin{itemize}
     \item \texttt{u}: estado de la solución en la iteración $k$, usado solo para lectura.
     \item \texttt{u\_new}: solución calculada en la iteración $k+1$, usado solo para escritura.
     \item \texttt{f}: término fuente, calculado una sola vez antes del bucle principal.
@@ -74,7 +74,7 @@ El doble buffer es necesario para que la iteración de Jacobi sea correcta: cada
 \fbox{%
 \begin{minipage}{0.92\textwidth}
 \centering
-\textbf{Flujo de una iteración de Jacobi (conceptual)}\\[4pt]
+\textbf{Flujo de una iteración de Jacobi}\\[4pt]
 Leer \texttt{u} y \texttt{f} $\rightarrow$ Calcular \texttt{u\_new[1..n]} $\rightarrow$ Calcular residual sobre \texttt{u\_new} $\rightarrow$ Intercambiar punteros\\[2pt]
 Si $\mathrm{RMS}(r) < 10^{-6}$: terminar; si no: continuar
 \end{minipage}}
@@ -101,7 +101,7 @@ El primero es la reserva alineada: los tres vectores se asignan con \texttt{alig
 \centering
 \textbf{Efecto de la alineación a línea de caché}\\[4pt]
 \begin{tabular}{@{}l@{}}
-\texttt{|-- 64 B --|-- 64 B --|-- 64 B --|...}\\
+\texttt{|-- 64 B -- |--- 64 B ---| |-- 64 B --|...}\\
 \texttt{[u[0]..u[7]] [u[8]..u[15]] [u[16]..] ...}
 \end{tabular}\\[4pt]
 Con \texttt{aligned\_alloc(64,\,\ldots)}, \texttt{u[0]} cae siempre al inicio de una línea.
@@ -114,11 +114,11 @@ El segundo cambio es el precálculo de $h^2$ fuera del bucle. Aunque los compila
 
 El núcleo de Jacobi accede a los tres vectores de forma estrictamente secuencial, por lo que el rendimiento está dominado por el ancho de banda de memoria más que por la unidad aritmética. En ese régimen, la alineación tiene mayor impacto que cualquier reducción aritmética.
 
-\subsection{Implementación paralela con hilos (Pthreads)}
+\subsection{Implementación paralela con hilos}
 
 La versión con hilos (\texttt{threads.c}) divide el dominio entre $p$ hilos POSIX. El estado de la simulación vive en variables globales del proceso (\texttt{g\_u}, \texttt{g\_u\_new}, \texttt{g\_f}, \texttt{g\_h}, \texttt{g\_n}), visibles directamente por todos los hilos sin mecanismo adicional de memoria compartida.
 
-\textbf{Partición del dominio.} Se usa partición por bloques contiguos: cada hilo $t$ trabaja sobre el rango $[\text{start}_t, \text{end}_t]$ con $\text{chunk} = \lfloor n/p \rfloor$. El último hilo absorbe los elementos sobrantes cuando $n$ no es múltiplo de $p$. Esta partición mantiene acceso secuencial dentro de cada hilo y es directamente comparable con la variante de procesos.
+\textbf{Partición del dominio.} Se usa partición por bloques contiguos: cada hilo $t$ trabaja sobre el rango $[\text{start}_t, \text{end}_t]$ con $\text{chunk} = \lfloor \frac{n}{p} \rfloor$. El último hilo absorbe los elementos sobrantes cuando $n$ no es múltiplo de $p$. Esta partición mantiene acceso secuencial dentro de cada hilo y es directamente comparable con la variante de procesos.
 
 \begin{figure}[H]
 \centering
@@ -135,7 +135,7 @@ T0: \texttt{[1..a]} \quad T1: \texttt{[a+1..b]} \quad T2: \texttt{[b+1..c]} \qua
 
 \textbf{Sincronización por iteración.} Se usan dos barreras \texttt{pthread\_barrier\_wait} en cada iteración:
 
-\begin{enumerate}[leftmargin=1.2cm]
+\begin{enumerate}
     \item Todos los hilos calculan su parte de \texttt{u\_new}.
     \item \textbf{Barrera 1}: necesaria porque \texttt{rms\_residual} accede a \texttt{u\_new[i-1]} y \texttt{u\_new[i+1]}, que son escritos por hilos vecinos. Sin esta barrera, un hilo podría leer valores aún no comprometidos por otro.
     \item El hilo~0 calcula el residual RMS sobre \texttt{g\_u\_new} completo, actualiza \texttt{g\_converged} e intercambia los punteros \texttt{g\_u} y \texttt{g\_u\_new}.
@@ -163,7 +163,7 @@ Usar una sola llamada a \texttt{mmap} mantiene los arreglos en páginas físicas
 
 \textbf{Sincronización asimétrica por semáforos.} El rol del proceso~0 es equivalente al del hilo~0: actúa como coordinador. El protocolo en cada iteración es el siguiente:
 
-\begin{enumerate}[leftmargin=1.2cm]
+\begin{enumerate}
     \item Cada proceso calcula su tramo de \texttt{u\_write} (el buffer determinado por \texttt{flip}).
     \item Los procesos $1 \ldots p{-}1$ publican en \texttt{workers\_done} y esperan en \texttt{go}.
     \item El proceso~0 espera $p{-}1$ veces en \texttt{workers\_done}, garantizando que todos han terminado de escribir \texttt{u\_write} antes de leer valores en los bordes de los tramos al calcular el residual.
