@@ -1,0 +1,53 @@
+
+%===================================
+%===================================
+\section{Conclusiones}
+\label{sec:Conclusiones}
+
+
+\begin{enumerate}
+
+    \item La implementación secuencial optimizada por compilador alcanza entre
+    $11.6\times$ y $14.5\times$ de speedup sobre la implementación secuencial
+    base, mientras que ninguna configuración paralela supera $0.74\times$. Esto
+    se debe a que las optimizaciones de compilador activan la vectorización AVX2,
+    que permite procesar cuatro valores en paralelo dentro del mismo núcleo, sin
+    ningún costo de sincronización. Antes de recurrir a la paralelización, vale
+    la pena asegurarse de que el código serial esté bien optimizado.
+
+    \item El algoritmo de Jacobi 1D no se beneficia de la paralelización para
+    los tamaños de problema evaluados: ninguna implementación paralela supera a
+    la versión secuencial base. La razón es que el cálculo del residuo se
+    ejecuta en un solo hilo mientras los demás esperan, y ese trabajo tiene el
+    mismo costo que el que realiza cada hilo en su porción del arreglo,
+    $\mathcal{O}(n/p)$. Según la Ley de Amdahl, esta fracción serial limita el
+    speedup máximo alcanzable sin importar cuántos hilos se agreguen.
+
+    \item A medida que $n$ crece, el cómputo útil por iteración empieza a
+    compensar el costo fijo de sincronización. Para la implementación con hilos
+    y $p=6$, el speedup pasa de $0.073\times$ en $n=100$ a $0.726\times$ en
+    $n=2000$. Aun así, con los tamaños evaluados nunca se supera la línea
+    de~$1\times$.
+
+    \item La configuración óptima para la implementación con hilos es $p=6$,
+    lo que coincide exactamente con los seis núcleos físicos del procesador
+    utilizado. Al pasar a $p=8$, el speedup cae: para $n=1000$,
+    baja de $0.487\times$ a $0.304\times$. Los hilos adicionales comparten el
+    mismo núcleo físico y compiten por los mismos recursos de ejecución, por lo
+    que el Hyperthreading no aporta ningún beneficio en este caso.
+
+    \item Para $p=2$, hilos y procesos producen tiempos muy similares en todos
+    los valores de $n$. A partir de $p=4$, los procesos empiezan a ser
+    considerablemente más lentos, y la brecha se amplía con $p$. El caso más
+    notable se da en $n=1000$ con $p=12$: la implementación con hilos tarda
+    $56{,}775$~ms frente a $118{,}164$~ms de la implementación con procesos,
+    es decir, $2.1\times$ más lento.
+
+    \item La implementación secuencial con alineación explícita de memoria a
+    64~bytes no muestra ninguna mejora significativa respecto a la versión base,
+    con speedups entre $0.988\times$ y $1.039\times$. Para los tamaños de
+    problema evaluados, los arreglos caben en los niveles L2 y L3 de caché, y
+    el patrón de acceso secuencial es suficiente para que el procesador gestione
+    los datos de forma eficiente por sí solo.
+
+\end{enumerate}
